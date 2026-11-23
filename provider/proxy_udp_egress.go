@@ -37,9 +37,10 @@ import (
 //     socket would put the identity's udp at the box's own address instead of
 //     the proxy's exit. A dial error makes the nat answer the client with an
 //     unreachable, so apps move on quickly
-//   - ipv6 destinations are refused: the check only proves the relay over
-//     ipv4, and most relays have no ipv6 exit, so a v6 datagram would vanish
-//     instead of failing fast
+//   - an ipv6 destination is relayed only through a proxy whose udp check
+//     measured the relay over ipv6 (proxyUDPCheckStore.ipv6UDPAllowed), and it
+//     is refused at once through every other proxy, because a v6 datagram sent
+//     through a relay without an ipv6 exit would vanish instead of failing fast
 //   - the association lives exactly as long as the flow: closing the conn
 //     closes the relay socket and the association's control connection. Each
 //     flow holds a tcp connection on the proxy, so proxied identities close
@@ -133,10 +134,14 @@ func installProxiedUdpEgress(connectSettings *connect.ConnectSettings, proxySett
 func dialProxiedUdp(ctx context.Context, proxySettings *connect.ProxySettings, checkStore *proxyUDPCheckStore, network string, addr string) (net.Conn, error) {
 	destination, err := proxiedUdpDestination(network, addr)
 	if err != nil {
-		if errors.Is(err, errProxiedUdpIpv6Refused) {
-			proxiedUdpRefusals.note(proxySettings, proxiedUdpRefusalIpv6)
-		}
 		return nil, err
+	}
+	// an ipv6 destination goes through this proxy only when its measured result
+	// says the relay carries ipv6 datagrams. Nothing is probed here: the sweep
+	// fills the result, and an unknown or missing one refuses at once
+	if destination.IP.To4() == nil && !checkStore.ipv6UDPAllowed(proxySettings.Key(), time.Now()) {
+		proxiedUdpRefusals.note(proxySettings, proxiedUdpRefusalIpv6)
+		return nil, errProxiedUdpIpv6Refused
 	}
 
 	// the check runs detached so a result is remembered for the identity even
@@ -158,6 +163,13 @@ func dialProxiedUdp(ctx context.Context, proxySettings *connect.ProxySettings, c
 	case proxyUDPExitMismatch:
 		proxiedUdpRefusals.note(proxySettings, proxiedUdpRefusalExitMismatch)
 		return nil, errProxiedUdpExitMismatch
+	}
+	// the wait above can outlast the first decision: a concurrent sweep may
+	// have changed the measurement, so an ipv6 destination is decided again
+	// from the current result before the association opens
+	if destination.IP.To4() == nil && !checkStore.ipv6UDPAllowed(proxySettings.Key(), time.Now()) {
+		proxiedUdpRefusals.note(proxySettings, proxiedUdpRefusalIpv6)
+		return nil, errProxiedUdpIpv6Refused
 	}
 
 	relayed, err := func() (net.PacketConn, error) {
@@ -185,7 +197,8 @@ func dialProxiedUdp(ctx context.Context, proxySettings *connect.ProxySettings, c
 
 // proxiedUdpDestination parses a flow's destination. The nat always dials an
 // ip literal; a name would need a resolution that does not go through the
-// proxy, so it is refused, and so is an ipv6 destination (see the file header).
+// proxy, so it is refused. An ipv6 literal is parsed too, and dialProxiedUdp
+// decides whether the proxy may relay it (see the file header).
 func proxiedUdpDestination(network string, addr string) (*net.UDPAddr, error) {
 	host, portText, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -201,7 +214,11 @@ func proxiedUdpDestination(network string, addr string) (*net.UDPAddr, error) {
 	}
 	ip4 := ip.To4()
 	switch network {
-	case "udp", "udp4":
+	case "udp":
+	case "udp4":
+		if ip4 == nil {
+			return nil, errProxiedUdpFamilyRefused
+		}
 	case "udp6":
 		if ip4 != nil {
 			return nil, errProxiedUdpFamilyRefused
@@ -210,7 +227,9 @@ func proxiedUdpDestination(network string, addr string) (*net.UDPAddr, error) {
 		return nil, errProxiedUdpBadNetwork
 	}
 	if ip4 == nil {
-		return nil, errProxiedUdpIpv6Refused
+		// an ipv6 destination: whether the identity may relay it is decided by
+		// dialProxiedUdp from the measured ipv6 result of the proxy
+		return &net.UDPAddr{IP: ip.To16(), Port: port}, nil
 	}
 	return &net.UDPAddr{IP: ip4, Port: port}, nil
 }

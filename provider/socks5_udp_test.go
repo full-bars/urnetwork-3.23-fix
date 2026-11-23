@@ -184,6 +184,7 @@ func (self *fakeSocks5) serve(conn net.Conn) {
 	}()
 
 	var client *net.UDPAddr
+	var out6 *net.UDPConn
 	buf := make([]byte, 65535)
 	for {
 		relay.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
@@ -198,6 +199,34 @@ func (self *fakeSocks5) serve(conn net.Conn) {
 		}
 		if client == nil || from.String() == client.String() {
 			client = from
+			if n >= 22 && buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 4 {
+				// an ipv6 destination: relay it from a udp6 socket on the loopback
+				// and wrap the replies like the ipv4 path does
+				if out6 == nil {
+					out6, err = net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback})
+					if err != nil {
+						continue
+					}
+					defer out6.Close()
+					toClient := client
+					go func(out6 *net.UDPConn) {
+						reply := make([]byte, 65535)
+						for {
+							m, source, err := out6.ReadFromUDP(reply)
+							if err != nil {
+								return
+							}
+							wrapped := append([]byte{0, 0, 0, 4}, source.IP.To16()...)
+							wrapped = binary.BigEndian.AppendUint16(wrapped, uint16(source.Port))
+							wrapped = append(wrapped, reply[:m]...)
+							relay.WriteToUDP(wrapped, toClient)
+						}
+					}(out6)
+				}
+				destination6 := &net.UDPAddr{IP: net.IP(append([]byte(nil), buf[4:20]...)), Port: int(binary.BigEndian.Uint16(buf[20:22]))}
+				out6.WriteToUDP(buf[22:n], destination6)
+				continue
+			}
 			if n < 10 || buf[0] != 0 || buf[1] != 0 || buf[2] != 0 || buf[3] != 1 {
 				continue
 			}

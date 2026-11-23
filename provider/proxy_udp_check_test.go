@@ -294,3 +294,191 @@ func TestH3FactoryOpensWhenTheUdpPathIsVerified(t *testing.T) {
 }
 
 func authFor(user string) *proxy.Auth { return &proxy.Auth{User: user, Password: "pw"} }
+
+// A flow reply moves the evidence timestamp, so measurement must expose the
+// completed check time instead: otherwise the gate would read the same result
+// as a new observation.
+func TestUDPMeasurementExposesTheCompletedCheckTime(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ps := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	store := newProxyUDPCheckStore(func(context.Context, *connect.ProxySettings) proxyUDPResult {
+		return proxyUDPResult{Status: proxyUDPUnknown}
+	})
+	store.Check(context.Background(), ps, now)
+
+	udp, _, state := store.measurement(ps.Key(), now)
+	if state != measurementReady || !udp.CheckedAt.Equal(now) {
+		t.Fatalf("a completed check exposed CheckedAt %v (state %v), want %v", udp.CheckedAt, state, now)
+	}
+
+	// flow evidence moves the result's own timestamp
+	store.noteFlowReply(ps.Key(), now.Add(time.Minute))
+	udp, _, _ = store.measurement(ps.Key(), now.Add(time.Minute))
+	if !udp.CheckedAt.Equal(now) {
+		t.Fatalf("flow evidence moved the completed check time to %v", udp.CheckedAt)
+	}
+	store.mu.Lock()
+	at := store.entries[ps.Key()].at
+	store.mu.Unlock()
+	if !at.Equal(now.Add(time.Minute)) {
+		t.Fatalf("flow evidence did not move the evidence timestamp: %v", at)
+	}
+}
+
+// Flow evidence must not revive an expired result: replacing it with a fresh
+// unknown hides the expiry from the controller, which then keeps a running
+// transport up past the UDP evidence.
+func TestUDPFlowReplyDoesNotReviveAnExpiredResult(t *testing.T) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	ps := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	store := newProxyUDPCheckStore(nil)
+	measured := proxyIPv6Result{}.measured(now.Add(-time.Hour), proxyIPv6Yes, "yes", "2001:db8::1", "2001:db8::1")
+	store.mu.Lock()
+	store.entries[ps.Key()] = &proxyUDPCheckEntry{
+		result:      proxyUDPResult{Status: proxyUDPOK},
+		at:          now.Add(-(proxyUDPOKTTL + time.Minute)),
+		completedAt: now.Add(-(proxyUDPOKTTL + time.Minute)),
+		ipv6:        measured,
+	}
+	store.mu.Unlock()
+
+	store.noteFlowReply(ps.Key(), now)
+	store.mu.Lock()
+	entry := store.entries[ps.Key()]
+	kept := entry.ipv6
+	store.mu.Unlock()
+	if !kept.At.Equal(measured.At) || kept.Status != measured.Status {
+		t.Fatalf("the replacement dropped the IPv6 record %v, so the identity's measurement is lost", measured)
+	}
+	udp, _, state := store.measurement(ps.Key(), now)
+	if state != measurementExpired {
+		t.Fatalf("state = %v, want measurementExpired: flow evidence revived an expired result (status %q)", state, udp.Status)
+	}
+}
+
+// A flow reply replaces an expired entry. The IPv6 reservation of a running
+// refresh and the retry deadline of a finished stage belong to the identity,
+// not to the entry that carried them: the replacement must keep both, or a
+// held measurement is dropped at publication and a finished backoff ends
+// before its deadline.
+func TestUDPFlowReplyKeepsTheIPv6ReservationAndRetry(t *testing.T) {
+	t.Setenv("URNETWORK_PROXY_IPV6_PROBE", "on")
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	ps := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	key := ps.Key()
+	// fresh for the lazy UDP recheck, so a sweep check runs only the IPv6
+	// stage, and expired for the result's own ttl at replyAt
+	seed := func(store *proxyUDPCheckStore) {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		store.entries[key] = &proxyUDPCheckEntry{at: now, result: proxyUDPResult{Status: proxyUDPUnknown}}
+	}
+	replyAt := now.Add(3 * time.Hour)
+
+	t.Run("refresh held", func(t *testing.T) {
+		store := newProxyUDPCheckStore(nil)
+		started, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		store.ipv6Probe = func(_ context.Context, _ *connect.ProxySettings, previous proxyIPv6Result, stamp time.Time, _ proxyIPv6Dials) (proxyIPv6Result, bool) {
+			close(started)
+			<-release
+			return previous.measured(stamp, proxyIPv6Yes, "yes", "2001:db8::1", "2001:db8::1"), true
+		}
+		seed(store)
+		go func() {
+			defer close(finished)
+			store.Check(withIPv6Sweep(context.Background()), ps, now)
+		}()
+		<-started
+		store.mu.Lock()
+		token := store.entries[key].ipv6Token
+		store.mu.Unlock()
+		if token == 0 {
+			t.Fatal("the IPv6 stage did not take a reservation")
+		}
+
+		store.noteFlowReply(key, replyAt)
+		store.mu.Lock()
+		held := store.entries[key].ipv6Running && store.entries[key].ipv6Token == token
+		store.mu.Unlock()
+		close(release)
+		<-finished
+
+		if !held {
+			t.Fatal("the flow reply dropped the IPv6 reservation, so the held refresh loses its result at publication")
+		}
+		store.mu.Lock()
+		entry := store.entries[key]
+		at, running := entry.ipv6.At, entry.ipv6Running
+		store.mu.Unlock()
+		if at.IsZero() {
+			t.Fatal("the held IPv6 measurement was not published")
+		}
+		if running {
+			t.Fatal("the published refresh left the reservation taken")
+		}
+	})
+
+	t.Run("backoff kept", func(t *testing.T) {
+		store := newProxyUDPCheckStore(nil)
+		seed(store)
+		retry := replyAt.Add(14 * time.Minute)
+		store.mu.Lock()
+		store.entries[key].ipv6RetryAt = retry
+		store.mu.Unlock()
+
+		store.noteFlowReply(key, replyAt)
+		store.mu.Lock()
+		got, due := store.entries[key].ipv6RetryAt, store.entries[key].ipv6DueLocked(replyAt)
+		store.mu.Unlock()
+		if !got.Equal(retry) || due {
+			t.Fatalf("the flow reply left the IPv6 retry at %v (due %v), want %v still holding", got, due, retry)
+		}
+	})
+}
+
+// Admission keeps the behaviour it had before the expiry work: an expired entry
+// hit by a matching flow reply becomes fresh unknown evidence, so a new UDP flow
+// or H3 dial may still attempt an association through it.
+func TestUDPFlowReplyGivesAnExpiredEntryItsOldAdmissionEvidence(t *testing.T) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	ps := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	store := newProxyUDPCheckStore(nil)
+	store.mu.Lock()
+	store.entries[ps.Key()] = &proxyUDPCheckEntry{
+		result:      proxyUDPResult{Status: proxyUDPOK},
+		at:          now.Add(-(proxyUDPOKTTL + time.Minute)),
+		completedAt: now.Add(-(proxyUDPOKTTL + time.Minute)),
+		realStatus:  proxyUDPOK,
+	}
+	store.mu.Unlock()
+
+	store.noteFlowReply(ps.Key(), now)
+	store.mu.Lock()
+	entry := store.entries[ps.Key()]
+	status, at, flow := entry.result.Status, entry.at, entry.flowReply
+	store.mu.Unlock()
+	if status != proxyUDPUnknown || !at.Equal(now) || !flow {
+		t.Fatalf("flow reply left %q at %v flow=%v, want fresh unknown evidence", status, at, flow)
+	}
+}
+
+// The controller keeps its own signal: the last real check expired, so the
+// measurement is stale even though a flow reply refreshed the evidence.
+func TestUDPMeasurementReportsTheRealCheckExpiryAfterAFlowReply(t *testing.T) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	ps := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	store := newProxyUDPCheckStore(nil)
+	store.mu.Lock()
+	store.entries[ps.Key()] = &proxyUDPCheckEntry{
+		result:      proxyUDPResult{Status: proxyUDPOK},
+		at:          now.Add(-(proxyUDPOKTTL + time.Minute)),
+		completedAt: now.Add(-(proxyUDPOKTTL + time.Minute)),
+		realStatus:  proxyUDPOK,
+	}
+	store.mu.Unlock()
+
+	store.noteFlowReply(ps.Key(), now)
+	if _, _, state := store.measurement(ps.Key(), now); state != measurementExpired {
+		t.Fatalf("state = %v, want measurementExpired: the real check is past its ttl", state)
+	}
+}

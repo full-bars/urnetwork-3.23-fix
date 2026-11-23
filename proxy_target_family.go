@@ -22,6 +22,7 @@ package connect
 // dialer was built could never be changed at runtime.
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -91,4 +92,13 @@ func (self ProxyTargetFamilyMode) String() string {
 		return "proxy"
 	}
 	return "v4"
+}
+
+// proxyDialCarriesName reports whether a proxied dial hands the destination
+// name to the proxy instead of resolving it here. That is the operator's proxy
+// mode, and any dial pinned to IPv6: the pinned name (connect-v6) has only an
+// AAAA record, so the local A-only lookup of the default mode would find
+// nothing, and the proxy reaching the name over IPv6 is what the pin means.
+func proxyDialCarriesName(ctx context.Context) bool {
+	return ProxyTargetFamilyCarriesName() || pinnedIpFamilyFromContext(ctx) == 6
 }

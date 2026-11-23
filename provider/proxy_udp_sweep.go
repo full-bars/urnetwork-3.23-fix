@@ -95,6 +95,19 @@ func udpProbeEnabled(state *controlState) bool {
 	return !found || strings.EqualFold(value, "on")
 }
 
+// proxyIPv6ProbeEnabled controls whether IPv6 capability checks run during sweeps.
+func proxyIPv6ProbeEnabled(state *controlState) bool {
+	if state != nil {
+		if value, found := state.get("proxy_ipv6_probe"); found {
+			return strings.EqualFold(value, "on")
+		}
+	}
+	if env := strings.TrimSpace(os.Getenv("URNETWORK_PROXY_IPV6_PROBE")); env != "" {
+		return strings.EqualFold(env, "on") || env == "1" || strings.EqualFold(env, "true") || strings.EqualFold(env, "yes")
+	}
+	return true
+}
+
 type udpTickRunner func(context.Context, *proxyUDPCheckStore, []*connect.ProxySettings, time.Time, time.Duration, time.Duration, float64, bool)
 
 // A UDP probe tick can take up to its whole interval, so it runs beside the
@@ -215,17 +228,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 			continue
 		}
 		settingsByKey[key] = settings
-		candidate := udpProbeCandidate{key: key, online: true}
-		if entry := store.cachedEntryLocked(key); entry != nil {
-			if entry.done != nil {
-				// An active check will publish a fresh answer itself.
-				candidate.lastChecked = now
-			} else {
-				candidate.lastChecked = entry.at
-				candidate.status = entry.result.Status
-			}
-		}
-		candidates = append(candidates, candidate)
+		candidates = append(candidates, store.probeCandidateLocked(key, now))
 	}
 	store.prune(now)
 	store.mu.Unlock()
@@ -244,7 +247,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 				if ctx.Err() != nil {
 					return
 				}
-				store.Check(ctx, settingsByKey[candidate.key], now)
+				store.Check(withIPv6Sweep(ctx), settingsByKey[candidate.key], now)
 			}
 		}()
 	}
@@ -266,6 +269,50 @@ type udpProbeCandidate struct {
 	online      bool
 	status      proxyUDPStatus
 	lastChecked time.Time
+	// eligibilityAt is the entry's stamp as it stands, monotonic reading
+	// included. The freshness test that makes a recheck due reads it, so a wall
+	// clock that stepped back cannot age a live result out of its window; every
+	// sort key keeps the wall clock alone, because a comparator over live and
+	// restored stamps that mixes the two clocks is not transitive.
+	eligibilityAt time.Time
+	ipv6Due       bool
+	// ipv6DueAt is when the identity became due for the IPv6 stage, from
+	// ipv6DueAtLocked, so the selector can order by the earlier of its due times
+	ipv6DueAt time.Time
+	// attemptedAt is when the store last dispatched a check for this identity
+	// that was cancelled before it published. Zero when there is no such
+	// attempt, which is every identity that has published since or has not been
+	// tried. The selector will not rank an identity earlier than this, so an
+	// attempt that publishes nothing still counts as its turn.
+	attemptedAt time.Time
+	// dueAt is filled by the selector: the earlier of the udp and ipv6 due
+	// times, and never earlier than attemptedAt
+	dueAt time.Time
+}
+
+// probeCandidateLocked builds the selector's view of one online identity. The
+// times it reports for ordering keep the wall clock alone: entry times carry a
+// monotonic reading beside their wall clock, and a comparator that mixes the two
+// clocks is not transitive. The freshness test is not a sort key, so it keeps the
+// entry's own stamp (eligibilityAt). The due decision itself stays with the entry
+// (ipv6DueLocked) and with the selector's own interval test.
+// Called with the lock held.
+func (self *proxyUDPCheckStore) probeCandidateLocked(key string, now time.Time) udpProbeCandidate {
+	candidate := udpProbeCandidate{key: key, online: true, attemptedAt: self.attempts[key].Round(0)}
+	if entry := self.cachedEntryLocked(key); entry != nil {
+		if entry.done != nil {
+			// An active check will publish a fresh answer itself.
+			candidate.lastChecked = now.Round(0)
+			candidate.eligibilityAt = now
+		} else {
+			candidate.lastChecked = entry.at.Round(0)
+			candidate.eligibilityAt = entry.at
+			candidate.status = entry.result.Status
+			candidate.ipv6Due = proxyIPv6ProbeEnabled(globalControlState) && self.ipv6Probe != nil && entry.ipv6DueLocked(now)
+			candidate.ipv6DueAt = entry.ipv6DueAtLocked().Round(0)
+		}
+	}
+	return candidate
 }
 
 // selectUDPProbeBatch selects due online candidates without modifying the input.
@@ -283,7 +330,38 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 		}
 		online++
 		refreshWindow := proxyUDPTTL(candidate.status) / 2
-		if candidate.lastChecked.IsZero() || !now.Before(candidate.lastChecked.Add(refreshWindow)) {
+		checked := candidate.eligibilityAt
+		if checked.IsZero() {
+			checked = candidate.lastChecked
+		}
+		if candidate.ipv6Due || checked.IsZero() || !now.Before(checked.Add(refreshWindow)) {
+			// one due time per candidate: a never-checked identity has none, so
+			// it goes first; a never-measured IPv6 record has none either, and
+			// the identity has been IPv6-due since its last UDP check, so that
+			// check is when it became due; otherwise the earlier of its udp and
+			// ipv6 due times
+			switch {
+			case candidate.lastChecked.IsZero():
+				candidate.dueAt = time.Time{}
+			case candidate.ipv6Due:
+				candidate.dueAt = candidate.ipv6DueAt.Round(0)
+				if candidate.dueAt.IsZero() {
+					candidate.dueAt = candidate.lastChecked.Round(0)
+				}
+				if udpDueAt := candidate.lastChecked.Add(refreshWindow).Round(0); udpDueAt.Before(candidate.dueAt) {
+					candidate.dueAt = udpDueAt
+				}
+			default:
+				candidate.dueAt = candidate.lastChecked.Add(refreshWindow).Round(0)
+			}
+			// an identity whose check was cancelled before it published had its
+			// turn then, so it is never ranked earlier than that attempt. The
+			// stamp moves on with every attempt, so the identity keeps coming
+			// round, and it cannot be held behind identities whose retries keep
+			// renewing an earlier due time.
+			if candidate.attemptedAt.After(candidate.dueAt) {
+				candidate.dueAt = candidate.attemptedAt.Round(0)
+			}
 			due = append(due, candidate)
 			if !candidate.lastChecked.IsZero() && refreshWindow < recheckWindow {
 				recheckWindow = refreshWindow
@@ -294,13 +372,21 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 		return nil
 	}
 
+	// earliest due first: one due time per candidate, the earlier of its udp
+	// and ipv6 due times and no earlier than its last cancelled attempt, so
+	// neither kind can starve the other and a retry that keeps renewing cannot
+	// hold an identity that has already had its turn. Every key is compared on
+	// the wall clock alone, so a comparator over live stamps and restored ones
+	// is a strict weak order.
 	sort.Slice(due, func(i, j int) bool {
 		a, b := due[i], due[j]
-		if a.lastChecked.IsZero() != b.lastChecked.IsZero() {
-			return a.lastChecked.IsZero()
+		aDue, bDue := a.dueAt.Round(0), b.dueAt.Round(0)
+		if !aDue.Equal(bDue) {
+			return aDue.Before(bDue)
 		}
-		if !a.lastChecked.Equal(b.lastChecked) {
-			return a.lastChecked.Before(b.lastChecked)
+		aChecked, bChecked := a.lastChecked.Round(0), b.lastChecked.Round(0)
+		if !aChecked.Equal(bChecked) {
+			return aChecked.Before(bChecked)
 		}
 		return a.key < b.key
 	})

@@ -106,12 +106,13 @@ type SnapshotSessions struct {
 }
 
 type SnapshotProxies struct {
-	UDP        *SnapshotProxyUDP `json:"udp,omitempty"`
-	Up         int               `json:"up"`
-	Degraded   int               `json:"degraded"`
-	Connecting int               `json:"connecting"`
-	Dead       int               `json:"dead"`
-	Parked     int               `json:"parked,omitempty"`
+	UDP        *SnapshotProxyUDP  `json:"udp,omitempty"`
+	IPv6       *SnapshotProxyIPv6 `json:"ipv6,omitempty"`
+	Up         int                `json:"up"`
+	Degraded   int                `json:"degraded"`
+	Connecting int                `json:"connecting"`
+	Dead       int                `json:"dead"`
+	Parked     int                `json:"parked,omitempty"`
 	// Configured is the pool size before the trim cap; TrimCap is the
 	// effective cap on running proxies (0 = none) and TrimCapSource says who
 	// set it (operator, oomcap, thrashcap). Omitted before the first trim
@@ -132,6 +133,18 @@ type SnapshotProxyUDP struct {
 	Mismatch  int `json:"mismatch"`
 	Unknown   int `json:"unknown"`
 	Unchecked int `json:"unchecked"`
+}
+
+// SnapshotProxyIPv6 counts online proxies by cached IPv6 capability and UDP relay result.
+type SnapshotProxyIPv6 struct {
+	Yes        int   `json:"yes"`
+	No         int   `json:"no"`
+	Unknown    int   `json:"unknown"`
+	NotProbed  int   `json:"not_probed"`
+	Probes     int64 `json:"probes"`
+	UDPYes     int   `json:"udp_yes"`
+	UDPNo      int   `json:"udp_no"`
+	UDPUnknown int   `json:"udp_unknown"`
 }
 
 type SnapshotRestart struct {
@@ -782,6 +795,7 @@ func productionSnapshotSources() snapshotSources {
 			sp := SnapshotProxies{Up: up, Degraded: len(degraded), Connecting: len(connecting), Dead: len(dead), Parked: len(held)}
 			if proxied {
 				sp.UDP = globalProxyUDPCheck.coverage(online, time.Now())
+				sp.IPv6 = globalProxyUDPCheck.ipv6Coverage(online, time.Now())
 			}
 			if desired, cap, source, ok := currentTrimSelection(); ok {
 				sp.TrimReported = true

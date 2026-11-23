@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -25,8 +26,11 @@ import (
 // back to TCP). The last one puts the identity at an address the grade never
 // looked at, so H3 is not used for it.
 //
-// The check runs once per identity, for identities that actually reach an H3
-// attempt (not for every candidate in the pool), and is remembered for a while:
+// The check runs for an online identity that reaches an H3 attempt, and for a
+// bounded batch of the online identities the sweep finds due on each reaper
+// tick. The batch is paced by the tick interval against the recheck window, so a
+// tick covers only its share of the pool. A result is remembered for a while,
+// and the sweep asks for it again after about half of its TTL:
 //
 //	ok        the relay works and its exit address equals the TCP exit address
 //	no-relay  the proxy refuses UDP ASSOCIATE, or the relay never answers
@@ -67,6 +71,10 @@ type proxyUDPResult struct {
 	// TCPExitObserved is true when this check looked the TCP exit up itself
 	// instead of reusing a remembered one.
 	TCPExitObserved bool
+	// CheckedAt is when the check completed. The store sets it when it hands a
+	// stored result to the dual stack gate (measurement), so the gate can tell
+	// a new check from a repeated poll of the same one. A probe leaves it zero.
+	CheckedAt time.Time
 }
 
 type udpCheckTcpExitServer struct {
@@ -351,14 +359,113 @@ func checkProxyUDP(ctx context.Context, settings *connect.ProxySettings) proxyUD
 }
 
 type proxyUDPCheckEntry struct {
-	result  proxyUDPResult
-	at      time.Time
-	tcpExit string // last known TCP exit, retained even when a relay fails
+	result proxyUDPResult
+	ipv6   proxyIPv6Result
+	// ipv6Restored is true while ipv6 is a record this store loaded from disk
+	// and no measurement of this process has replaced. The dual stack gate
+	// baselines such a record instead of counting it as a new measurement. In
+	// memory only: it is never written to the state file.
+	ipv6Restored bool
+	at           time.Time
+	// completedAt is when a check last published a result here. at also moves
+	// for flow evidence (noteFlowReply), so only this timestamp says a new
+	// observation exists. It is not persisted: the gate that reads it does not
+	// survive a restart either.
+	completedAt time.Time
+	// realStatus is the status of the last real check. A flow reply replaces
+	// result with unknown, and unknown's TTL is the wrong one to expire the
+	// controller's evidence on. In memory only: never persisted, and no
+	// admission path reads it.
+	realStatus proxyUDPStatus
+	tcpExit    string // last known TCP exit, retained even when a relay fails
 	// tcpExitAt is when a lookup last observed tcpExit. Only a lookup renews it.
 	tcpExitAt time.Time
 	flowReply bool
 	// done is non-nil while a check for the identity is running
 	done chan struct{}
+	// ipv6Running is true while the IPv6 stage measures this identity, so a
+	// second sweep call does not start another measurement. It is not persisted.
+	ipv6Running bool
+	// ipv6Token names the refresh that holds the reservation (ipv6Running). A
+	// refresh clears the flag and publishes its result only while the entry
+	// still carries its token, so a refresh whose entry was replaced meanwhile
+	// cannot clear the flag of the one that followed it or write into it.
+	ipv6Token uint64
+	// ipv6RetryAt holds back the next IPv6 measurement after one stopped early
+	// (its own timeout, not a cancelled sweep). Without it the identity stays
+	// due and every sweep tick holds a probe slot for it again. It keeps the
+	// previous result and is not persisted: a restart retries once.
+	ipv6RetryAt time.Time
+}
+
+// proxyIPv6StopBackoff is how long an identity waits after a measurement that
+// stopped early before the sweep measures it again.
+const proxyIPv6StopBackoff = 15 * time.Minute
+
+// ipv6CompletionTime returns the time the stage finished. A variable so a test
+// can pin it; production reads the real clock, which also counts the time
+// between the sweep picking its batch and this refresh running.
+var ipv6CompletionTime = func(now time.Time) time.Time { return time.Now() }
+
+// ipv6StageCompletedAt is the stamp base for a retry. It never lands before the
+// sweep's own time, so a pinned synthetic clock stays consistent with it.
+func ipv6StageCompletedAt(now time.Time) time.Time {
+	completed := ipv6CompletionTime(now)
+	if completed.Before(now) {
+		return now
+	}
+	return completed
+}
+
+// proxyIPv6CutShortRetry is how long an identity waits when the sweep's tick
+// deadline cut its stage short, so nothing was measured. It retries sooner than
+// after a completed measurement, but not on the next tick: a stage that is cut
+// short stays due, and the IPv6-due order would then keep it at the front of
+// every batch and starve the other due identities.
+const proxyIPv6CutShortRetry = 5 * time.Minute
+
+// ipv6RecordDueAtLocked is when the stored record calls for its next
+// measurement: the time of the last one plus its interval. A record restored
+// with the state file carries the wall clock alone. Zero is no deadline at all,
+// for a record that was never measured.
+func (e *proxyUDPCheckEntry) ipv6RecordDueAtLocked() time.Time {
+	if e == nil || e.ipv6.At.IsZero() || e.ipv6.Interval <= 0 {
+		return time.Time{}
+	}
+	return e.ipv6.At.Add(e.ipv6.Interval)
+}
+
+// ipv6DueLocked is whether the sweep should measure the identity now. The two
+// deadlines are independent and both must have passed: the record's own
+// deadline, and the retry hold. Combining them into one stamp would compare a
+// restored wall-clock deadline against a live retry stamp that carries a
+// monotonic reading, so a backward wall-clock step could let the retry stamp
+// stand in for the record's deadline. The caller holds the store lock (or owns
+// the entry).
+func (e *proxyUDPCheckEntry) ipv6DueLocked(now time.Time) bool {
+	if e == nil {
+		return true
+	}
+	if next := e.ipv6RecordDueAtLocked(); !next.IsZero() && now.Before(next) {
+		return false
+	}
+	return !now.Before(e.ipv6RetryAt)
+}
+
+// ipv6DueAtLocked orders the sweep: the later of the record's deadline and the
+// retry hold, on the wall clock alone. The sweep sorts candidates by it, beside
+// wall-clock times restored from the state file, so the result is stripped of
+// the monotonic reading that a live stamp carries and the sort never mixes the
+// two clocks. The due decision does not use this value; see ipv6DueLocked.
+func (e *proxyUDPCheckEntry) ipv6DueAtLocked() time.Time {
+	if e == nil {
+		return time.Time{}
+	}
+	due := e.ipv6RetryAt.Round(0)
+	if next := e.ipv6RecordDueAtLocked(); next.After(due) {
+		due = next
+	}
+	return due.Round(0)
 }
 
 // proxyUDPCheckStore remembers the check per proxy IDENTITY (address plus
@@ -376,8 +483,17 @@ type proxyUDPCheckStore struct {
 	// detachedRuns holds the one detached check in flight per identity
 	// (checkDetached)
 	detachedRuns map[string]*proxyUDPCheckRun
-	persistPath  string
-	persisted    map[string]udpPersistEntry
+	// attempts remembers a check that was dispatched and then cancelled before
+	// it published. Such a check removes the placeholder it installed or puts
+	// the previous result back unchanged, so nothing else records that the
+	// identity had its turn, and the sweep would rank it as never checked (or as
+	// long overdue) on every tick. The value is when that attempt was
+	// dispatched. In memory only: no admission path reads it, it is never
+	// attached to an entry, and no state file field carries it. It is bounded
+	// and pruned with the entries.
+	attempts    map[string]time.Time
+	persistPath string
+	persisted   map[string]udpPersistEntry
 	// background state writer (proxy_udp_persist.go)
 	persistDirty   bool
 	persistWriting bool
@@ -385,6 +501,25 @@ type proxyUDPCheckStore struct {
 	persistKick    chan struct{}
 	persistDone    chan struct{}
 	persistFailed  bool
+	// ipv6Probe runs the three-stage IPv6 probe for an identity when its
+	// previous IPv6 result is due. It is nil by default; the store used by
+	// the sweep sets it to runProxyIPv6Stage.
+	ipv6Probe     func(context.Context, *connect.ProxySettings, proxyIPv6Result, time.Time, proxyIPv6Dials) (proxyIPv6Result, bool)
+	ipv6ProbesRun atomic.Int64
+	// ipv6Seq numbers the IPv6 reservations (proxyUDPCheckEntry.ipv6Token)
+	ipv6Seq uint64
+	// ipv6TransportPinned names the identities whose extra IPv6 transport is
+	// running, with the token of the controller that took the pin. Capacity
+	// pruning keeps their entries: the real-check pair that stops a running
+	// transport on the UDP expiry (completedAt, realStatus) lives in the entry
+	// only, and the restore path cannot bring it back. Age pruning may still
+	// drop one, which costs only evidence the gate already reads as expired. In
+	// memory only, and bounded by the number of proxies, so it cannot hold the
+	// cap open.
+	ipv6TransportPinned map[string]uint64
+	// pinSeq numbers those tokens. Zero never names a pin, so a controller that
+	// holds no pin can tell that from one it holds.
+	pinSeq uint64
 }
 
 // proxyUDPCheckRun is one check whose result is ready once done is closed.
@@ -395,11 +530,67 @@ type proxyUDPCheckRun struct {
 
 func newProxyUDPCheckStore(probe func(context.Context, *connect.ProxySettings) proxyUDPResult) *proxyUDPCheckStore {
 	return &proxyUDPCheckStore{
-		probe:        probe,
-		entries:      map[string]*proxyUDPCheckEntry{},
-		slots:        make(chan struct{}, udpCheckMaxConcurrent),
-		detachedRuns: map[string]*proxyUDPCheckRun{},
+		probe:               probe,
+		entries:             map[string]*proxyUDPCheckEntry{},
+		slots:               make(chan struct{}, udpCheckMaxConcurrent),
+		detachedRuns:        map[string]*proxyUDPCheckRun{},
+		attempts:            map[string]time.Time{},
+		ipv6TransportPinned: map[string]uint64{},
 	}
+}
+
+// udpProbeAttemptMaxEntries bounds the cancelled-attempt table. It is the same
+// bound the store puts on its own entries, so the table that only shadows them
+// for ordering can never outgrow them.
+const udpProbeAttemptMaxEntries = 4 * udpStateMaxEntries
+
+// noteAttemptLocked remembers an attempt that was cancelled before it could
+// publish, whatever result the identity had before it. The stamp is the wall
+// clock alone, because the sweep sorts by it beside times restored from the
+// state file. Called with the lock held.
+func (self *proxyUDPCheckStore) noteAttemptLocked(key string, now time.Time) {
+	if self.attempts == nil {
+		self.attempts = map[string]time.Time{}
+	}
+	self.attempts[key] = now.Round(0)
+}
+
+// clearAttemptLocked forgets a cancelled attempt once the identity publishes a
+// result. Called with the lock held.
+func (self *proxyUDPCheckStore) clearAttemptLocked(key string) {
+	delete(self.attempts, key)
+}
+
+// pinIPv6Transport records that an identity runs its extra IPv6 transport, so
+// pruning keeps its entry while it does, and returns the token this caller owns.
+// A later pin on the same identity replaces the token, which is what keeps a
+// retiring controller's release from clearing the pin of its replacement.
+func (self *proxyUDPCheckStore) pinIPv6Transport(key string) uint64 {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	if self.ipv6TransportPinned == nil {
+		self.ipv6TransportPinned = map[string]uint64{}
+	}
+	self.pinSeq++
+	self.ipv6TransportPinned[key] = self.pinSeq
+	return self.pinSeq
+}
+
+// releaseIPv6Transport releases a pin its owner took. A token a later pin
+// replaced is left alone: that pin belongs to another controller.
+func (self *proxyUDPCheckStore) releaseIPv6Transport(key string, token uint64) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	if self.ipv6TransportPinned[key] == token {
+		delete(self.ipv6TransportPinned, key)
+	}
+}
+
+// pinnedLocked reports whether an identity runs an extra IPv6 transport whose
+// entry capacity pruning must keep. Called with the lock held.
+func (self *proxyUDPCheckStore) pinnedLocked(key string) bool {
+	_, pinned := self.ipv6TransportPinned[key]
+	return pinned
 }
 
 // prune drops identities nobody has asked about for two state lifetimes,
@@ -408,9 +599,34 @@ func (self *proxyUDPCheckStore) prune(now time.Time) {
 	if self.lastPrune.IsZero() || now.Sub(self.lastPrune) >= proxyUDPLazyTTL {
 		self.lastPrune = now
 		for key, entry := range self.entries {
-			if entry.done == nil && now.Sub(entry.at) > 2*proxyUDPTTL(entry.result.Status) {
+			if entry.done == nil && !entry.ipv6Running && now.Sub(entry.at) > 2*proxyUDPTTL(entry.result.Status) && !entry.ipv6.retain(now) {
 				delete(self.entries, key)
+				delete(self.attempts, key)
 			}
+		}
+	}
+	// the shadow table is bounded on its own: an identity whose checks keep
+	// being cancelled has no entry for the entry bound to evict
+	if len(self.attempts) > udpProbeAttemptMaxEntries {
+		type attempt struct {
+			key string
+			at  time.Time
+		}
+		oldest := make([]attempt, 0, len(self.attempts))
+		for key, at := range self.attempts {
+			oldest = append(oldest, attempt{key, at})
+		}
+		sort.Slice(oldest, func(i, j int) bool {
+			if oldest[i].at.Equal(oldest[j].at) {
+				return oldest[i].key < oldest[j].key
+			}
+			return oldest[i].at.Before(oldest[j].at)
+		})
+		for _, attempt := range oldest {
+			if len(self.attempts) <= udpProbeAttemptMaxEntries {
+				break
+			}
+			delete(self.attempts, attempt.key)
 		}
 	}
 	const limit = 4 * udpStateMaxEntries
@@ -423,7 +639,11 @@ func (self *proxyUDPCheckStore) prune(now time.Time) {
 	}
 	var oldest []completed
 	for key, entry := range self.entries {
-		if entry.done == nil {
+		// an entry with an IPv6 reservation is not evicted: its refresh would
+		// publish into a replacement. Neither is the entry of an identity that
+		// runs an extra IPv6 transport: its real-check pair is what stops that
+		// transport on the UDP expiry, and a restored row does not carry it.
+		if entry.done == nil && !entry.ipv6Running && !self.pinnedLocked(key) {
 			oldest = append(oldest, completed{key, entry.at})
 		}
 	}
@@ -438,10 +658,15 @@ func (self *proxyUDPCheckStore) prune(now time.Time) {
 			break
 		}
 		delete(self.entries, entry.key)
+		delete(self.attempts, entry.key)
 	}
 }
 
 var globalProxyUDPCheck = newProxyUDPCheckStore(checkProxyUDP)
+
+func init() {
+	globalProxyUDPCheck.ipv6Probe = runProxyIPv6Stage
+}
 
 func proxyUDPTTL(status proxyUDPStatus) time.Duration {
 	switch status {
@@ -478,17 +703,40 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 				return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
 			}
 		}
-		if entry != nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
+		freshUDP := entry != nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status)
+		// the IPv6 stage runs only in checks the background sweep starts, so a
+		// UDP flow or an H3 dial never waits for it
+		ipv6Due := proxyIPv6ProbeEnabled(globalControlState) && self.ipv6Probe != nil && ipv6SweepFromContext(ctx) && entry.ipv6DueLocked(now)
+		if freshUDP {
+			// the completed UDP result stays in place while the IPv6 stage runs, so
+			// no caller waits for it and ipv6UDPAllowed keeps reading it
 			result := entry.result
 			self.mu.Unlock()
+			if ipv6Due {
+				self.refreshIPv6(ctx, settings, key, now)
+			}
 			return result
 		}
 		var previous *proxyUDPResult
 		var previousAt time.Time
+		var previousCompletedAt time.Time
+		var previousRealStatus proxyUDPStatus
+		var ipv6 proxyIPv6Result
+		ipv6Restored := false
+		ipv6Running := false
+		var ipv6RetryAt time.Time
+		var ipv6Token uint64
 		var tcpExit string
 		var tcpExitAt time.Time
 		if entry != nil {
 			previousAt = entry.at
+			previousCompletedAt = entry.completedAt
+			previousRealStatus = entry.realStatus
+			ipv6 = entry.ipv6
+			ipv6Restored = entry.ipv6Restored
+			ipv6Running = entry.ipv6Running
+			ipv6RetryAt = entry.ipv6RetryAt
+			ipv6Token = entry.ipv6Token
 			copyOf := entry.result
 			previous = &copyOf
 			tcpExit = entry.tcpExit
@@ -508,7 +756,17 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			reuseBudget = proxyTCPExitMaxAge - now.Sub(tcpExitAt)
 		}
 		self.prune(now)
-		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt}
+		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt, ipv6: ipv6, ipv6Restored: ipv6Restored, ipv6Running: ipv6Running, ipv6Token: ipv6Token, ipv6RetryAt: ipv6RetryAt}
+		if previous != nil {
+			// the last completed result stays readable while the recheck runs:
+			// a dial decision taken now must read it, and its own TTL still
+			// decides whether it counts (measurement reports this entry in
+			// flight, so no reader treats it as a fresh check)
+			running.result = *previous
+			running.at = previousAt
+			running.completedAt = previousCompletedAt
+			running.realStatus = previousRealStatus
+		}
 		self.entries[key] = running
 		self.mu.Unlock()
 
@@ -525,10 +783,24 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 
 		self.mu.Lock()
 		if ctx.Err() != nil {
-			// an interrupted check says nothing: forget it
+			// an interrupted check says nothing: forget it and remember that the
+			// identity had its turn, so the sweep does not hand it the same slot
+			// on every tick. An identity that had a previous result needs that
+			// mark too: the result comes back unchanged and carries no sign of
+			// the attempt, so the sweep would keep it at the front of its due
+			// list beside an identity that never gets a turn.
 			delete(self.entries, key)
+			self.noteAttemptLocked(key, now)
 			if previous != nil {
-				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt}
+				// the IPv6 fields come from the entry this check installed: an IPv6
+				// refresh that ran meanwhile updated it and cleared its flag, and a
+				// restore from the snapshot taken before the probe would bring back
+				// the old measurement and a flag nothing will clear
+				restored := &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, completedAt: previousCompletedAt, realStatus: previousRealStatus, ipv6: running.ipv6, ipv6Restored: running.ipv6Restored, ipv6Running: running.ipv6Running, ipv6Token: running.ipv6Token, ipv6RetryAt: running.ipv6RetryAt}
+				self.entries[key] = restored
+				if err := self.persistLocked(key, restored, now); err != nil {
+					tlog("[proxy][udp] could not persist probe state\n")
+				}
 			}
 			close(running.done)
 			self.mu.Unlock()
@@ -542,6 +814,11 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			running.tcpExitAt = now
 		}
 		running.at = now
+		running.completedAt = now
+		running.realStatus = running.result.Status
+		// the identity has a result now, so a cancelled attempt no longer
+		// describes it
+		self.clearAttemptLocked(key)
 		close(running.done)
 		running.done = nil
 		self.prune(now)
@@ -551,7 +828,104 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		self.mu.Unlock()
 
 		logProxyUDPResult(settings, previous, result)
+		if ipv6Due {
+			// the stage is independent of the UDP result: a proxy without a UDP
+			// relay can still have IPv6, so it runs after a failed check too, and
+			// only after the UDP result is published
+			self.refreshIPv6(ctx, settings, key, now)
+		}
 		return result
+	}
+}
+
+// refreshIPv6 measures the IPv6 capability of one identity apart from the UDP
+// check. The completed UDP entry stays in place the whole time (no done channel
+// is installed), so nobody waits for the measurement and the cached UDP result
+// stays readable. A flag keeps a second sweep call from measuring the same
+// identity at once. A cancelled measurement leaves the previous result.
+func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *connect.ProxySettings, key string, now time.Time) {
+	self.mu.Lock()
+	entry := self.cachedEntryLocked(key)
+	if entry == nil || entry.ipv6Running || !entry.ipv6DueLocked(now) || self.ipv6Probe == nil || !proxyIPv6ProbeEnabled(globalControlState) {
+		self.mu.Unlock()
+		return
+	}
+	previous := entry.ipv6
+	self.ipv6Seq++
+	token := self.ipv6Seq
+	entry.ipv6Running = true
+	entry.ipv6Token = token
+	self.mu.Unlock()
+
+	var measured proxyIPv6Result
+	measuredOK := false
+	skipped := false
+	// endedErr is the parent context as the stage ended, and completedAt is when
+	// it ended. Both are read here, before the wait for the store lock, because
+	// that is how the stage ended: a tick that expires while this goroutine waits
+	// for the lock must not turn a stage that finished on its own into one the
+	// deadline cut short.
+	var endedErr error
+	select {
+	case self.slots <- struct{}{}:
+		if ctx.Err() != nil || !proxyIPv6ProbeEnabled(globalControlState) {
+			// the operator switched the probe off while this waited for a slot:
+			// no measurement was made and none is held against the identity
+			<-self.slots
+			skipped = true
+			endedErr = ctx.Err()
+			break
+		}
+		stageCtx, cancel := context.WithTimeout(ctx, udpCheckOverallLimit)
+		measured, measuredOK = self.ipv6Probe(stageCtx, settings, previous, now, defaultProxyIPv6Dials())
+		cancel()
+		endedErr = ctx.Err()
+		<-self.slots
+	case <-ctx.Done():
+		endedErr = ctx.Err()
+	}
+	// the backoff counts from the moment the stage finished, so neither the wait
+	// for a worker slot, a long probe, nor the wait to publish shortens it
+	completedAt := ipv6StageCompletedAt(now)
+
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	current := self.cachedEntryLocked(key)
+	if current == nil || current.ipv6Token != token {
+		// the entry was replaced since this refresh took its reservation: the
+		// flag and the result now belong to the refresh that holds the new one
+		return
+	}
+	current.ipv6Running = false
+	if !measuredOK && !skipped && endedErr == nil {
+		// the stage stopped on its own: keep the previous result and wait before
+		// the next tick measures this identity again
+		current.ipv6RetryAt = completedAt.Add(proxyIPv6StopBackoff)
+	}
+	if !measuredOK && endedErr != nil {
+		// the tick deadline cut the stage short, so nothing was measured. Without
+		// a stamp the identity stays due and the IPv6-due order keeps it at the
+		// front of every batch, starving the other due identities
+		current.ipv6RetryAt = completedAt.Add(proxyIPv6CutShortRetry)
+	}
+	if measuredOK {
+		// a measurement that was made is kept even when the parent context ends
+		// right after it: throwing it away would also skip the retry clear and
+		// send the identity into a backoff for a result it already has
+		current.ipv6 = measured
+		// the record is this process's now: a gate that reads it counts it
+		current.ipv6Restored = false
+		current.ipv6RetryAt = time.Time{}
+		self.ipv6ProbesRun.Add(1)
+		// while a UDP recheck is in flight the entry is a placeholder with no
+		// UDP result, and persisting it would replace the last completed UDP
+		// result on disk. The recheck persists the entry when it publishes, or
+		// when it is cancelled and restores the previous result.
+		if current.done == nil {
+			if err := self.persistLocked(key, current, now); err != nil {
+				tlog("[proxy][udp] could not persist probe state\n")
+			}
+		}
 	}
 }
 
@@ -640,14 +1014,32 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 			return
 		}
 	}
+	var realCompletedAt time.Time
+	var realStatus proxyUDPStatus
 	var tcpExit string
 	var tcpExitAt time.Time
+	var ipv6 proxyIPv6Result
+	var ipv6Restored bool
+	var ipv6Running bool
+	var ipv6Token uint64
+	var ipv6RetryAt time.Time
 	if entry != nil {
+		ipv6 = entry.ipv6
+		ipv6Restored = entry.ipv6Restored
+		// a refresh holds its reservation on the identity, and a finished
+		// stage holds its retry deadline: both outlive the entry this replaces
+		ipv6Running = entry.ipv6Running
+		ipv6Token = entry.ipv6Token
+		ipv6RetryAt = entry.ipv6RetryAt
 		tcpExit = entry.tcpExit
 		tcpExitAt = entry.tcpExitAt
+		// the real check behind this evidence keeps its time and status, so the
+		// controller can still see it expire while admission reads the unknown
+		realCompletedAt = entry.completedAt
+		realStatus = entry.realStatus
 	}
 	self.prune(now)
-	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true}
+	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true, completedAt: realCompletedAt, realStatus: realStatus, ipv6: ipv6, ipv6Restored: ipv6Restored, ipv6Running: ipv6Running, ipv6Token: ipv6Token, ipv6RetryAt: ipv6RetryAt}
 	self.entries[key] = entry
 	self.prune(now)
 	if err := self.persistLocked(key, entry, now); err != nil {
@@ -683,6 +1075,62 @@ func (self *proxyUDPCheckStore) coverage(online []string, now time.Time) *Snapsh
 	return out
 }
 
+// proxyUDPDetail is one identity's udp row for the hover detail: the result
+// verdict, both exits and the ipv6 pair, all from one entry state.
+type proxyUDPDetail struct {
+	Status   string
+	TCPExit  string
+	UDPExit  string
+	IPv6     string
+	IPv6Exit string
+}
+
+// detailFor reads every field of the detail row under one hold of the store
+// lock, so a check that completes between two reads cannot pair one check's
+// verdict with another check's exits. The row describes the last completed
+// check, which stays on the entry while a recheck runs (see Check).
+func (self *proxyUDPCheckStore) detailFor(key string, now time.Time) proxyUDPDetail {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	detail := proxyUDPDetail{Status: "unchecked", IPv6: "unknown"}
+	entry := self.cachedEntryLocked(key)
+	if entry == nil {
+		return detail
+	}
+	if !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPTTL(entry.result.Status) {
+		switch entry.result.Status {
+		case proxyUDPOK:
+			detail.Status = "ok"
+		case proxyUDPNoRelay:
+			detail.Status = "no_relay"
+		case proxyUDPExitMismatch:
+			detail.Status = "mismatch"
+		case proxyUDPUnknown:
+			detail.Status = "unknown"
+		}
+		safe := func(raw string) string {
+			if ip := net.ParseIP(raw); ip != nil {
+				return ip.String()
+			}
+			return ""
+		}
+		detail.TCPExit, detail.UDPExit = safe(entry.result.TCPExit), safe(entry.result.UDPExit)
+	}
+	if !entry.ipv6.At.IsZero() && entry.ipv6.retain(now) {
+		exit := entry.ipv6.TCPExit
+		if exit == "" {
+			exit = entry.ipv6.UDPExit
+		}
+		if ip := net.ParseIP(exit); ip != nil && ip.To4() == nil {
+			detail.IPv6Exit = ip.String()
+		}
+		if status := string(entry.ipv6.Status); status != "" {
+			detail.IPv6 = status
+		}
+	}
+	return detail
+}
+
 // statusFor reads the cached UDP result of one identity without starting a
 // check, for the hover detail. It uses the same rules as coverage: a missing,
 // in-flight or expired result is unchecked.
@@ -706,9 +1154,126 @@ func (self *proxyUDPCheckStore) statusFor(key string, now time.Time) string {
 	return "unchecked"
 }
 
+// exitsFor returns only valid IP addresses from a fresh cached check.
+func (self *proxyUDPCheckStore) exitsFor(key string, now time.Time) (string, string) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	entry := self.cachedEntryLocked(key)
+	if entry == nil || entry.done != nil || entry.at.IsZero() || now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
+		return "", ""
+	}
+	safe := func(raw string) string {
+		if ip := net.ParseIP(raw); ip != nil {
+			return ip.String()
+		}
+		return ""
+	}
+	return safe(entry.result.TCPExit), safe(entry.result.UDPExit)
+}
+
+// ipv6Coverage reads cached IPv6 results for online identities.
+func (self *proxyUDPCheckStore) ipv6Coverage(online []string, now time.Time) *SnapshotProxyIPv6 {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	out := &SnapshotProxyIPv6{
+		Probes: self.ipv6ProbesRun.Load(),
+	}
+	for _, key := range online {
+		entry := self.cachedEntryLocked(key)
+		if entry == nil || entry.ipv6.At.IsZero() || !entry.ipv6.retain(now) {
+			out.NotProbed++
+			continue
+		}
+		switch entry.ipv6.Status {
+		case proxyIPv6Yes:
+			out.Yes++
+			switch entry.ipv6.UDP {
+			case "yes":
+				out.UDPYes++
+			case "no", "mismatch":
+				out.UDPNo++
+			default:
+				out.UDPUnknown++
+			}
+		case proxyIPv6No:
+			out.No++
+		case proxyIPv6Unknown:
+			out.Unknown++
+		default:
+			out.NotProbed++
+		}
+	}
+	return out
+}
+
+// ipv6For returns the cached IPv6 status and safe IPv6 exit address.
+func (self *proxyUDPCheckStore) ipv6For(key string, now time.Time) (string, string) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	entry := self.cachedEntryLocked(key)
+	if entry == nil || entry.ipv6.At.IsZero() || !entry.ipv6.retain(now) {
+		return "unknown", ""
+	}
+	exit := entry.ipv6.TCPExit
+	if exit == "" {
+		exit = entry.ipv6.UDPExit
+	}
+	safeExit := ""
+	if ip := net.ParseIP(exit); ip != nil && ip.To4() == nil {
+		safeExit = ip.String()
+	}
+	status := string(entry.ipv6.Status)
+	if status == "" {
+		status = "unknown"
+	}
+	return status, safeExit
+}
+
 // size is how many identities the store currently remembers.
 func (self *proxyUDPCheckStore) size() int {
 	self.mu.Lock()
 	defer self.mu.Unlock()
 	return len(self.entries)
+}
+
+// proxyUDPIPv6EnabledIn reports the proxy_udp_ipv6 setting. It is on by
+// default, and off restores the refusal of every ipv6 destination.
+func proxyUDPIPv6EnabledIn(state *controlState) bool {
+	if state == nil {
+		return true
+	}
+	value, found := state.get("proxy_udp_ipv6")
+	return !found || strings.EqualFold(value, "on")
+}
+
+func proxyUDPIPv6Enabled() bool {
+	return proxyUDPIPv6EnabledIn(globalControlState)
+}
+
+// ipv6UDPAllowed reports whether a client udp flow to an ipv6 destination may
+// use this identity's relay. It reads the cached measurement and never probes.
+// All of these must hold: the setting is on, the udp check of the relay is ok,
+// the measured ipv6 result is a fresh yes for both tcp and udp (the udp exit
+// matched the tcp exit), and the result is younger than twice its interval, so
+// a proxy that stopped being measured stops being trusted.
+func (self *proxyUDPCheckStore) ipv6UDPAllowed(key string, now time.Time) bool {
+	if !proxyUDPIPv6Enabled() {
+		return false
+	}
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	entry := self.cachedEntryLocked(key)
+	if entry == nil || entry.result.Status != proxyUDPOK {
+		return false
+	}
+	// the same age rule measurement applies: a result past its TTL is not
+	// evidence, whatever the cached status says
+	if !entry.at.IsZero() && now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
+		return false
+	}
+	r := entry.ipv6
+	if r.Status != proxyIPv6Yes || r.UDP != "yes" || !r.valid(now) {
+		return false
+	}
+	return now.Before(r.At.Add(2 * r.Interval))
 }

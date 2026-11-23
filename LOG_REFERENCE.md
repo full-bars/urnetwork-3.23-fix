@@ -371,6 +371,41 @@ A proxy with a confirmed missing relay or mismatched exit is not offered for H3 
 
 ---
 
+## 🌐 Proxy IPv6 Transport (`[ipv6] proxy identity`)
+
+A proxy that was measured to carry IPv6 gets one extra platform connection, pinned to IPv6 and dialed through the same proxy. The provider prints one line when that connection starts and one when it stops. The line names the reason. No line appears while nothing changes.
+
+```
+[ipv6] proxy identity: IPv6 transport started (the proxy was measured to carry IPv6)
+[ipv6] proxy identity: IPv6 transport stopped (the proxy no longer qualifies)
+[ipv6] proxy identity: IPv6 transport stopped (the IPv6 result expired)
+```
+
+| Line | Meaning |
+|---|---|
+| `IPv6 transport started (the proxy was measured to carry IPv6)` | Two new measurements in a row qualified. The extra connection is up. The legacy connection is untouched. |
+| `IPv6 transport stopped (the proxy no longer qualifies)` | Two checks in a row failed. |
+| `IPv6 transport stopped (the IPv6 result expired)` | The IPv6 measurement is older than twice its interval. A proxy that is no longer measured is no longer trusted. |
+| `IPv6 transport stopped (the UDP evidence expired)` | The UDP check behind the measurement expired. |
+| `IPv6 transport stopped (the record has no IPv6 measurement)` or `(the proxy has no measurement)` | The saved result is gone, for example after the proxy left the list. |
+| `IPv6 transport stopped (proxy_dualstack is off)` | The `proxy_dualstack` switch was turned off with `urnet-tools set proxy-dualstack off`. |
+
+Each line is about the identity of one proxy. The `[proxy][udp]` lines above name the proxy by slot and address. The counts of extra connections and of their starts and stops are in `urnet_proxy_ipv6_transports` and `urnet_proxy_ipv6_transport_changes_total`.
+
+---
+
+## 🧾 Proxy Config Entry Rejected (`[proxy] config entry rejected`)
+
+The internal proxy config accepts `host:port`, `host:port:user:pass`, `user:pass@host:port` and `scheme://user:pass@host:port`. An entry that holds a credential in any other shape is refused, and the provider prints one line without the entry, because the entry holds the credential.
+
+```
+[proxy] config entry rejected: invalid_address (expected host:port, host:port:user:pass or user:pass@host:port)
+```
+
+Fix the entry in the config. The rest of the list loads as usual.
+
+---
+
 ## 🔌 H3 (QUIC) Beside H1 (beta, `URNETWORK_H3` or the `h3` key)
 
 Only a box that runs H3 logs these, and only for the direct identity. H3 is off by default. It starts when `URNETWORK_H3` is set at startup, or when the `h3` control key is switched on live with `urnet-tools set h3 on`.
@@ -960,6 +995,8 @@ Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each li
 | `error=N` | Cumulative failures. A healthy error rate is under ~10% of successes. |
 | `clients=N` | **Independent metric.** Number of end-user relay sessions currently routing through this proxy via LocalUserNat. Zero is normal when no users are assigned. |
 | `age=Xs` | How long the oldest current user session has been continuously present on this proxy. Only shown when `clients > 0`. |
+
+Proxy lines name the proxy by its slot and address, for example `proxy[3] (203.0.113.10:1080)`, and a dial error keeps the address Go printed, so a line says which proxy failed and where. Only credentials are removed: the user name and password in front of an address, a user name in an identity label, and URL query tokens.
 
 ### Connection strategies
 

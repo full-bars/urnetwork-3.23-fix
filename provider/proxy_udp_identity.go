@@ -1,14 +1,15 @@
 package main
 
 import (
-	"crypto/sha256"
 	"fmt"
 
 	"github.com/urnetwork/connect"
 )
 
-// udpProxyIdentity identifies the proxy without printing its address or account.
+// udpProxyIdentity names the proxy in a UDP message the way the rest of the
+// provider does: the slot and the address it dials. The account is not part of
+// it, and the address never holds a credential (parseProxyAddress keeps those in
+// Auth), so the line says which proxy it is about without printing either.
 func udpProxyIdentity(settings *connect.ProxySettings) string {
-	sum := sha256.Sum256([]byte(settings.Key()))
-	return fmt.Sprintf("proxy[%d] (%x)", settings.Index, sum[:6])
+	return fmt.Sprintf("proxy[%d] (%s)", settings.Index, redactedProxyAddress(settings.Address))
 }

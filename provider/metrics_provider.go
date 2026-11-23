@@ -584,11 +584,13 @@ func providerExtraMetrics() string {
 		fmt.Fprintf(&b, "urnet_proxy_auth_failures %d\n", totalAuthFailures)
 	}
 
-	// Report live UDP coverage independently of the proxy state file.
+	// Report live UDP and IPv6 coverage independently of the proxy state file.
 	held := trimHeldSnapshot()
 	_, _, _, _, _, online, proxied := connect.ProxyHealthSnapshotWithIdentities(held)
 	if proxied {
 		writeUDPProxyMetrics(&b, globalProxyUDPCheck.coverage(online, time.Now()))
+		writeIPv6ProxyMetrics(&b, globalProxyUDPCheck.ipv6Coverage(online, time.Now()))
+		writeProxyIPv6TransportMetrics(&b)
 	}
 
 	// --- URL proxy grades ---
@@ -641,6 +643,29 @@ func writeUDPProxyMetrics(b *strings.Builder, cov *SnapshotProxyUDP) {
 	fmt.Fprintf(b, "urnet_proxy_udp_proxies{state=\"mismatch\"} %d\n", cov.Mismatch)
 	fmt.Fprintf(b, "urnet_proxy_udp_proxies{state=\"unknown\"} %d\n", cov.Unknown)
 	fmt.Fprintf(b, "urnet_proxy_udp_proxies{state=\"unchecked\"} %d\n", cov.Unchecked)
+}
+
+// writeIPv6ProxyMetrics writes proxy IPv6 capability and relay metrics to a string builder.
+func writeIPv6ProxyMetrics(b *strings.Builder, cov *SnapshotProxyIPv6) {
+	if cov == nil {
+		return
+	}
+	fmt.Fprintf(b, "# HELP urnet_proxy_ipv6_proxies Online proxies by cached IPv6 capability result.\n")
+	fmt.Fprintf(b, "# TYPE urnet_proxy_ipv6_proxies gauge\n")
+	fmt.Fprintf(b, "urnet_proxy_ipv6_proxies{state=\"yes\"} %d\n", cov.Yes)
+	fmt.Fprintf(b, "urnet_proxy_ipv6_proxies{state=\"no\"} %d\n", cov.No)
+	fmt.Fprintf(b, "urnet_proxy_ipv6_proxies{state=\"unknown\"} %d\n", cov.Unknown)
+	fmt.Fprintf(b, "urnet_proxy_ipv6_proxies{state=\"not_probed_yet\"} %d\n", cov.NotProbed)
+
+	fmt.Fprintf(b, "# HELP urnet_proxy_ipv6_udp_proxies Online IPv6 proxies by cached UDP relay result.\n")
+	fmt.Fprintf(b, "# TYPE urnet_proxy_ipv6_udp_proxies gauge\n")
+	fmt.Fprintf(b, "urnet_proxy_ipv6_udp_proxies{state=\"yes\"} %d\n", cov.UDPYes)
+	fmt.Fprintf(b, "urnet_proxy_ipv6_udp_proxies{state=\"no\"} %d\n", cov.UDPNo)
+	fmt.Fprintf(b, "urnet_proxy_ipv6_udp_proxies{state=\"unknown\"} %d\n", cov.UDPUnknown)
+
+	fmt.Fprintf(b, "# HELP urnet_proxy_ipv6_probes_total Number of proxy IPv6 capability probes run.\n")
+	fmt.Fprintf(b, "# TYPE urnet_proxy_ipv6_probes_total counter\n")
+	fmt.Fprintf(b, "urnet_proxy_ipv6_probes_total %d\n", cov.Probes)
 }
 
 // writeNodeGauges emits the restart-reason and resource gauges. Resource

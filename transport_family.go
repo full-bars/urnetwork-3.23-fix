@@ -264,6 +264,40 @@ func NewDirectClientStrategy(ctx context.Context, settings *ClientStrategySettin
 	return strategy
 }
 
+// NewProxiedFamilyClientStrategy builds the client strategy an extra
+// family-pinned platform transport of a PROXIED identity dials with. It keeps
+// the caller's ProxySettings, so the connection to the platform leaves through
+// the proxy and the platform observes the proxy's exit address, which is the
+// family the pin proves for that identity. The pin is not applied to the hop to
+// the proxy. The pinned transport tags its dials with the family
+// (withPinnedIpFamily), the control family dial narrows the network, and
+// ProxySettings.NewDialContext hands the family hostname to the proxy
+// (proxyDialCarriesName), so the proxy reaches the platform over the pinned
+// family. That relies on the platform name having only an AAAA record: the
+// provider cannot see which family the proxy used, so a name with both records
+// could be reached over IPv4 and the platform would observe that exit instead.
+// Extenders and VLESS servers stay off, as for a direct pin. The
+// caller's settings are not mutated.
+func NewProxiedFamilyClientStrategy(ctx context.Context, settings *ClientStrategySettings, ipFamily int) *ClientStrategy {
+	proxied := *settings
+	proxied.ExpandExtenderProfileCount = 0
+	proxied.MaxExtenderCount = 0
+	proxied.DisableManualExtenders = true
+	proxied.VlessConfigs = nil
+	proxied.DisableVless = true
+	if proxied.ConnectSettings.ProxySettings != nil && proxied.ConnectSettings.DialContextSettings != nil {
+		// ConnectSettings.DialContext takes a custom dialer before the proxy, so
+		// a caller's dialer would connect from this host while the transport is
+		// treated as proxy-backed (proxiedPin). The proxy is the only route of
+		// this strategy: drop the custom dial settings on this copy. The
+		// caller's settings are not changed.
+		proxied.ConnectSettings.DialContextSettings = nil
+	}
+	strategy := NewClientStrategy(ctx, &proxied)
+	strategy.ipFamily = normalizeIpFamily(ipFamily)
+	return strategy
+}
+
 // pinnedDialContext is the enforcement below name resolution: the network is
 // narrowed to the pin, a Force that contradicts the pin is an error (so a plain
 // ws:// dial, which bypasses the tls chain, still cannot connect against the
@@ -605,6 +639,12 @@ func (self *PlatformTransport) pinned() bool {
 	return self.ipFamily != 0
 }
 
+// proxiedPin reports whether this pinned transport reaches the platform
+// through a proxy (NewProxiedFamilyClientStrategy).
+func (self *PlatformTransport) proxiedPin() bool {
+	return self.pinned() && self.clientStrategy != nil && self.clientStrategy.ConnectSettings().ProxySettings != nil
+}
+
 // SetEnabled is the owner's switch. Disabling closes the live connection and
 // parks every mode runner before its next dial; enabling lets them dial again.
 // A transport constructed with StartDisabled begins parked.
@@ -716,7 +756,10 @@ func (self *PlatformTransport) refreshFamilyHold() {
 		defer self.familyHoldLock.Unlock()
 		if pinnedFamilyPolicyConflict(self.ipFamily) {
 			hold = PlatformTransportStateIdlePolicy
-		} else if !pinnedFamilySupported(self.ipFamily) {
+		} else if !self.proxiedPin() && !pinnedFamilySupported(self.ipFamily) {
+			// a pin that dials through a proxy does not use this host's address
+			// of the family: the proxy supplies the exit, so the local probe and
+			// the interface bind say nothing about whether it can connect
 			hold = PlatformTransportStateSleeping
 		} else if routeHold = self.routeHold.value().hold; 0 < routeHold {
 			hold = PlatformTransportStateSleeping

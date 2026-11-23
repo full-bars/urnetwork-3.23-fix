@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// "golang.org/x/net/proxy"
@@ -215,6 +216,15 @@ type ClientStrategy struct {
 	// dohSettings is the strategy's current DoH settings, replaced live by
 	// SetInternalDohSettings (ported from upstream at 20b29f79).
 	dohSettings *DohSettings
+
+	// closeOnce makes Close safe to call more than once: the first call releases
+	// the pooled connections and the internal DoH resolver, later calls do
+	// nothing. This matters when a transport owns a strategy that a shorter
+	// lived owner may also close.
+	closeOnce sync.Once
+	// closed records that Close ran, so an owner can tell the strategy was
+	// released (PlatformTransportSettings.OwnClientStrategy).
+	closed atomic.Bool
 
 	mutex sync.Mutex
 	// dialers are only updated inside the mutex
@@ -891,10 +901,10 @@ func (self *ClientStrategy) parallelEvalErr(ctx context.Context, eval func(ctx c
 				noteFailed(result)
 				if result != nil {
 					if result.err == nil || result.terminal {
-						self.log.V(2).Infof("[net][p]select: %s\n", dialer.String())
+						self.log.V(2).Infof("[net][p]select: %s\n", dialer.logLine(nil))
 						return result, nil
 					}
-					self.log.V(2).Infof("[net][p]select: %s = %s\n", dialer.String(), result.err)
+					self.log.V(2).Infof("[net][p]select: %s\n", dialer.logLine(result.err))
 					result.Close()
 				}
 			}
@@ -915,10 +925,10 @@ func (self *ClientStrategy) parallelEvalErr(ctx context.Context, eval func(ctx c
 				case result := <-out:
 					if result != nil {
 						if result.err == nil || result.terminal {
-							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.String())
+							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logLine(nil))
 							return result, nil
 						}
-						self.log.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
+						self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logLine(result.err))
 						result.Close()
 					}
 					go HandleError(func() {
@@ -943,10 +953,10 @@ func (self *ClientStrategy) parallelEvalErr(ctx context.Context, eval func(ctx c
 				case result := <-out:
 					if result != nil {
 						if result.err == nil || result.terminal {
-							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.String())
+							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logLine(nil))
 							return result, nil
 						}
-						self.log.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
+						self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logLine(result.err))
 						result.Close()
 					}
 					go HandleError(func() {
@@ -1039,14 +1049,14 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 					self.mutex.Lock()
 					self.failureCount = 0
 					self.mutex.Unlock()
-					self.log.Infof("🌐 [net][s]select: %s dur=%dms\n", dialer.String(), dialDur.Milliseconds())
+					self.log.Infof("🌐 [net][s]select: %s dur=%dms\n", dialer.logLine(nil), dialDur.Milliseconds())
 					return result
 				}
 				if ok, suppressed := shouldLogSelectErr(); ok {
 					if suppressed > 0 {
-						self.log.Infof("🌐 [net][s]select: %s = %s dur=%dms (%d suppressed)\n", dialer.String(), result.err, dialDur.Milliseconds(), suppressed)
+						self.log.Infof("🌐 [net][s]select: %s dur=%dms (%d suppressed)\n", dialer.logLine(result.err), dialDur.Milliseconds(), suppressed)
 					} else {
-						self.log.Infof("🌐 [net][s]select: %s = %s dur=%dms\n", dialer.String(), result.err, dialDur.Milliseconds())
+						self.log.Infof("🌐 [net][s]select: %s dur=%dms\n", dialer.logLine(result.err), dialDur.Milliseconds())
 					}
 				}
 				result.Close()
@@ -1106,7 +1116,7 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, er
 		response, err := httpClientForRequest(httpClient, request).Do(timing.trace(handleCtx, request, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
-				self.log.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, err)
+				self.log.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, errText(err))
 			} else {
 				self.log.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, response.Status)
 			}
@@ -1150,7 +1160,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 		response, err := httpClientForRequest(httpClient, request).Do(timing.trace(handleCtx, request, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
-				self.log.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, err)
+				self.log.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, errText(err))
 			} else {
 				self.log.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, response.Status)
 			}
@@ -1173,7 +1183,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 		response, err := httpClientForRequest(httpClient, helloRequest).Do(timing.trace(handleCtx, helloRequest, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
-				self.log.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, err)
+				self.log.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, errText(err))
 			} else {
 				self.log.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, response.Status)
 			}
@@ -1205,7 +1215,7 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 		wsConn, response, err := wsDialer.DialContext(timing.traceCtx(handleCtx, startDial), url, requestHeader)
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
-				self.log.Infof("[net]ws dial %s = %s\n", url, err)
+				self.log.Infof("[net]ws dial %s = %s\n", url, errText(err))
 			} else {
 				self.log.Infof("[net]ws dial %s = %s\n", url, response.Status)
 			}
@@ -1820,6 +1830,8 @@ func (self *clientDialer) ResetHealth() {
 	self.connectObservedAt = time.Time{}
 }
 
+// String is the dialer's summary for diagnostics and for a log line: the proxy
+// slot, the address it dials and its counters, with no credential in it.
 func (self *clientDialer) String() string {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1847,6 +1859,16 @@ func (self *clientDialer) String() string {
 	} else {
 		return fmt.Sprintf("[direct] %s success=%d error=%d%s", self.description, self.successCount, self.errorCount, latencyStr)
 	}
+}
+
+// logLine is the text of a select line: the dialer's summary and, when the
+// attempt failed, its error with any proxy credential removed. Both the serial
+// and the parallel select log through it, so the two lines read alike.
+func (self *clientDialer) logLine(err error) string {
+	if err == nil {
+		return self.String()
+	}
+	return self.String() + " = " + errText(err)
 }
 
 // routeIdentity is the stable identity of the route this dialer takes, in the
