@@ -11,8 +11,8 @@ import (
 
 // The Remote panel draws the mirrored transfer chart of the URnetwork client's
 // statistics screen. One direction is drawn above a center line and the other
-// below it, each as a curve through the samples, with a faint fill under it and
-// the peak value labelled where it happened. The newest data is on the right
+// below it, each as a thin curve through the samples, with the peak value
+// labelled where it happened. The newest data is on the right
 // and slides left as the clock moves.
 //
 // Everything in this file is a pure function of the chart input and the buffer
@@ -537,7 +537,7 @@ func (c remoteChart) drawPlot(b *tui.Buffer, l remoteChartLayout, scales map[str
 			if len(pts) == 0 {
 				continue
 			}
-			cv.plot(pts, scales[c.scaleKey(s)], half == 0, offset+i, !s.Packets)
+			cv.plot(pts, scales[c.scaleKey(s)], half == 0, offset+i)
 		}
 	}
 	cv.draw(b, l.upY)
@@ -613,19 +613,19 @@ func (c remoteChart) drawPeak(b *tui.Buffer, dir []remoteSeries, up bool, row in
 
 // remoteCanvas collects the dots of the plot: both halves and the baseline
 // dot row between them. A cell can carry only one color, so a curve wins over
-// the baseline and the fill, and a later series wins over an earlier one in
+// the baseline, and a later series wins over an earlier one in
 // the few cells where two curves cross. The baseline dots are kept in a curve
 // cell, so the line stays whole under a curve.
 type remoteCanvas struct {
 	cells, rows int
 	base        int   // dot row of the baseline
-	curve, fill []int // series index + 1; 0 is empty
+	curve       []int // series index + 1; 0 is empty
 	styles      []tui.Style
 	baseStyle   tui.Style
 }
 
 func newRemoteCanvas(cells, rows, base int, series []remoteSeries, baseStyle tui.Style) *remoteCanvas {
-	cv := &remoteCanvas{cells: cells, rows: rows, base: base, curve: make([]int, cells*2*rows*4), fill: make([]int, cells*2*rows*4), baseStyle: baseStyle}
+	cv := &remoteCanvas{cells: cells, rows: rows, base: base, curve: make([]int, cells*2*rows*4), baseStyle: baseStyle}
 	cv.styles = make([]tui.Style, len(series))
 	for i, s := range series {
 		cv.styles[i] = s.Style
@@ -640,19 +640,11 @@ func (cv *remoteCanvas) setCurve(x, y, idx int) {
 	cv.curve[y*cv.cells*2+x] = idx + 1
 }
 
-func (cv *remoteCanvas) setFill(x, y, idx int) {
-	if x < 0 || y < 0 || x >= cv.cells*2 || y >= cv.rows*4 || y == cv.base {
-		return
-	}
-	cv.fill[y*cv.cells*2+x] = idx + 1
-}
-
 // plot draws one curve, one dot thick: the value at every dot column, with the
 // gap between neighboring columns joined so the line has no breaks. A zero
-// lies on the baseline, and a rise or a fall starts from it. With fill set, a
-// dim hatch of one dot in eight shades the area between the curve and the
-// baseline, a quiet stand-in for the client app's translucent fill.
-func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int, fill bool) {
+// lies on the baseline, and a rise or a fall starts from it. Nothing is
+// drawn under the curve: a dot pattern there reads as static in a terminal.
+func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int) {
 	if scale <= 0 {
 		scale = 1
 	}
@@ -686,17 +678,7 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int,
 			// there at its own height instead of rising from the baseline.
 			prev = y
 		}
-		if fill {
-			for k := 1; k < h; k++ {
-				yy := cv.base - k
-				if !up {
-					yy = cv.base + k
-				}
-				if (x+2*k)%8 == 0 {
-					cv.setFill(x, yy, idx)
-				}
-			}
-		}
+
 		a, z := min(prev, y), max(prev, y)
 		for yy := a; yy <= z; yy++ {
 			cv.setCurve(x, yy, idx)
@@ -838,8 +820,8 @@ func remoteMonotoneAt(pts []remotePoint, x float64) float64 {
 func (cv *remoteCanvas) draw(b *tui.Buffer, y0 int) {
 	for r := 0; r < cv.rows; r++ {
 		for x := 0; x < cv.cells; x++ {
-			var mask, baseMask, fillMask rune
-			var st, fst tui.Style
+			var mask, baseMask rune
+			var st tui.Style
 			for k := 0; k < 4; k++ {
 				y := r*4 + (3 - k) // k counts from the bottom dot of the cell
 				if y == cv.base {
@@ -854,23 +836,12 @@ func (cv *remoteCanvas) draw(b *tui.Buffer, y0 int) {
 					mask |= remoteBrailleRight[k]
 					st = cv.styles[idx-1]
 				}
-				if idx := cv.fill[y*cv.cells*2+2*x]; idx != 0 {
-					fillMask |= remoteBrailleLeft[k]
-					fst = cv.styles[idx-1]
-				}
-				if idx := cv.fill[y*cv.cells*2+2*x+1]; idx != 0 {
-					fillMask |= remoteBrailleRight[k]
-					fst = cv.styles[idx-1]
-				}
 			}
 			switch {
 			case mask != 0:
 				b.Set(x, y0+r, tui.Cell{Rune: 0x2800 + mask | baseMask, Style: st})
 			case baseMask != 0:
 				b.Set(x, y0+r, tui.Cell{Rune: 0x2800 + baseMask, Style: cv.baseStyle})
-			case fillMask != 0:
-				fst.Attrs |= tui.AttrDim
-				b.Set(x, y0+r, tui.Cell{Rune: 0x2800 + fillMask, Style: fst})
 			}
 		}
 	}

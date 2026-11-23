@@ -194,3 +194,41 @@ func TestTopWindowGraphsFillThePlot(t *testing.T) {
 		}
 	}
 }
+
+// Pages 2, 3 and 4 are one family over the recorded series: lines only, no
+// fill cells, and the same flat plot height at the same size.
+func TestMirroredPagesAreOneFamily(t *testing.T) {
+	long := recordedReplies(t, "top_remote_recorded_660s.jsonl")
+	for _, size := range [][2]int{{120, 40}, {80, 24}} {
+		spans := map[string]int{}
+		for _, page := range []string{"remote", "billable", "total"} {
+			m, _ := replayRemote(t, long, 1, size[0], size[1])
+			m.page = pageByID(page)
+			b := tui.New(size[0], size[1])
+			renderFresh(m, b)
+			first, last, fill := -1, -1, 0
+			for y := 0; y < b.Height(); y++ {
+				for x := 0; x < b.Width(); x++ {
+					c := b.Cell(x, y)
+					if c.Rune <= 0x2800 || c.Rune > 0x28ff {
+						continue
+					}
+					if c.Style.Attrs&tui.AttrDim != 0 {
+						fill++
+					}
+					if first < 0 {
+						first = y
+					}
+					last = y
+				}
+			}
+			if fill != 0 {
+				t.Errorf("%s %dx%d: %d dim fill cells, want lines only:\n%s", page, size[0], size[1], fill, b.String())
+			}
+			spans[page] = last - first
+		}
+		if spans["billable"] > spans["remote"] || spans["total"] > spans["remote"] {
+			t.Errorf("%dx%d: the plots span %v rows, want pages 3 and 4 no taller than page 2", size[0], size[1], spans)
+		}
+	}
+}

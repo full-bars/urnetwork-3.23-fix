@@ -1,7 +1,6 @@
 package urnettools
 
 import (
-	"math/bits"
 	"strings"
 	"testing"
 
@@ -80,35 +79,21 @@ func TestRemoteBaselineIsInTheCanvas(t *testing.T) {
 	}
 }
 
-// The fill under a byte curve is a sparse hatch: at most one dot in six of
-// the area between the curve and the line.
-func TestRemoteFillIsSparse(t *testing.T) {
-	c := remoteTestChart(remoteFlat(60, 1<<20), nil)
+// The chart draws lines only, as clean one dot curves: no hatch or dither under
+// a curve, which reads as static in a terminal.
+func TestRemoteDrawsLinesOnly(t *testing.T) {
+	c := remoteTestChart(remoteFlat(60, 1<<20), remoteSpike(60, 30, 1<<20, 0))
 	b := tui.New(60, 15)
 	drawRemoteChart(b, c)
-	fillDots, area := 0, 0
 	for y := 0; y < b.Height(); y++ {
 		for x := 0; x < b.Width(); x++ {
-			cell := b.Cell(x, y)
-			if cell.Rune < 0x2800 || cell.Rune > 0x28ff {
-				continue
-			}
-			if cell.Style.Attrs&tui.AttrDim != 0 {
-				fillDots += bits.OnesCount32(uint32(cell.Rune - 0x2800))
-				area += 8
+			if cell := b.Cell(x, y); cell.Rune > 0x2800 && cell.Rune <= 0x28ff && cell.Style.Attrs&tui.AttrDim != 0 {
+				t.Fatalf("cell %d,%d is a dim fill cell:\n%s", x, y, b.String())
 			}
 		}
 	}
-	if fillDots == 0 {
-		t.Fatalf("a full byte curve must have a fill:\n%s", b.String())
-	}
-	if fillDots*6 > area {
-		t.Fatalf("the fill has %d dots in %d cells of area:\n%s", fillDots, area/8, b.String())
-	}
 }
 
-// A rate smaller than one dot of the scale lies on the baseline, as a quiet
-// stretch does in the app, instead of a flat line one dot above it.
 func TestRemoteTinyRatesLieOnTheBaseline(t *testing.T) {
 	// A 1 MiB/s burst sets the scale, and the rest of the window carries 0.7
 	// of one dot of it.

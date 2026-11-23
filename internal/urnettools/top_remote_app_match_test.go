@@ -89,8 +89,8 @@ func TestRemoteScaleFloors(t *testing.T) {
 	}
 }
 
-// Only the byte curve has a fill under it, as in the client app. The packet
-// curve is a line, so where the two overlap the byte area stays readable.
+// The packet curve is a line, like the byte curve: no cell under either curve
+// carries a dim fill.
 func TestRemotePacketCurveHasNoFill(t *testing.T) {
 	c := remoteTestChart(remoteSpike(60, 20, 64*1024, 0), nil)
 	c.Up = append(c.Up, remoteSeries{Style: remotePink, Group: "billable packets", Packets: true, Values: remoteSpike(60, 40, 200, 0)})
@@ -111,11 +111,11 @@ func TestRemotePacketCurveHasNoFill(t *testing.T) {
 			}
 		}
 	}
-	if greenFill == 0 || pinkLine == 0 {
-		t.Fatalf("expected a byte fill and a packet line, got %d and %d:\n%s", greenFill, pinkLine, b.String())
+	if pinkLine == 0 {
+		t.Fatalf("expected a packet line:\n%s", b.String())
 	}
-	if pinkFill != 0 {
-		t.Fatalf("the packet curve has %d fill cells:\n%s", pinkFill, b.String())
+	if greenFill != 0 || pinkFill != 0 {
+		t.Fatalf("the curves have %d and %d fill cells, want lines only:\n%s", greenFill, pinkFill, b.String())
 	}
 }
 

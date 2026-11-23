@@ -235,7 +235,8 @@ func TestRemoteScaleEasingInFrame(t *testing.T) {
 	}
 }
 
-// TestRemoteStyles checks the colors the braille dots and the fill carry.
+// TestRemoteStyles checks the color the braille dots carry, and that the chart
+// draws lines only, with no dim fill under a curve.
 func TestRemoteStyles(t *testing.T) {
 	// Wide enough for the sparse hatch under the burst to show.
 	c := remoteTestChart(remoteSpike(60, 30, 100*1024, 0), nil)
@@ -259,8 +260,8 @@ func TestRemoteStyles(t *testing.T) {
 	if green == 0 {
 		t.Fatal("no braille cell carries the curve color")
 	}
-	if dim == 0 {
-		t.Fatal("the fill under the curve carries no dim braille cell")
+	if dim != 0 {
+		t.Fatalf("%d dim fill cells, want lines only", dim)
 	}
 }
 
