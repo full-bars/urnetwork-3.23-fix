@@ -213,7 +213,7 @@ The block shows one number and one unit letter per cell, so three rates fit the 
 
 ## Billable and total by direction
 
-Two pages split the traffic figures into the two directions. Page 3 draws billable traffic and page 4 draws total traffic. Each page draws upload above the centre line and download below it:
+Two pages split the traffic figures into the two directions. Page 3 draws billable traffic and page 4 draws total traffic. Each page draws upload above the center line and download below it:
 
 - upload is the traffic the provider sent away from the client (`tx`).
 - download is the traffic it received toward the client (`rx`).
@@ -261,7 +261,7 @@ H1 connections: 25, of them 5 on the H1+ carrier (20%)
 
 The window is 60 seconds, the same window the Remote page draws. The page keeps the transport counters from the traffic polls `top` already makes, and differences the newest reading against the newest one a window back. A session shorter than a window uses the oldest reading it has, so the bar is live from the second poll and the caption names the span it covers.
 
-The bar is one row across the content width. Each kind takes a run of cells in proportion to the bytes it carried, by the largest remainder, so the runs add up to exactly the bar width and every kind that carried traffic keeps at least one cell. The first and last cells are half blocks, which rounds the ends. H1 and H1+ are separate carriers and separate segments. The colours are green for H3, light blue for H1, the URnetwork blue for H1+, pink for WhoDis and yellow for its pump. The mono and ASCII themes draw the bar in `#` cells and use `*` and `o` for the markers.
+The bar is one row across the content width. Each kind takes a run of cells in proportion to the bytes it carried, by the largest remainder, so the runs add up to exactly the bar width and every kind that carried traffic keeps at least one cell. The first and last cells are half blocks, which rounds the ends. H1 and H1+ are separate carriers and separate segments. The colors are green for H3, light blue for H1, the URnetwork blue for H1+, pink for WhoDis and yellow for its pump. The mono and ASCII themes draw the bar in `#` cells and use `*` and `o` for the markers.
 
 The legend gives the whole percent of each kind that carried traffic. Whole percents add up to exactly 100, and the largest remainder takes the spare point where one is needed. The footer lists every kind the provider runs that carried nothing, with a hollow marker, so a kind that sat out is not read as a zero share. A window with no traffic at all says `idle`, draws the bar as empty cells and lists every kind in the footer.
 
@@ -273,17 +273,17 @@ A counter that went down, for example when a proxy is removed, is skipped instea
 
 `urnet-tools top` can draw the client app's mirrored transfer chart under the throughput graphs. Press `r` to show or hide it. The panel needs a graph band tall enough for it and the two throughput graphs, so a short terminal leaves it out and a taller one brings it back, and the key keeps the choice.
 
-Billable traffic is drawn above a dim centre line and total traffic below it. Each side scales to the peak in the window, so the peak reaches the edge of its half, and the peak value is labelled where it happened. The label slides sideways with the peak column and stays inside the plot. The corner shows the average of the newest five samples for each side, and the arrow is bright while that side carries traffic. Curves are smoothed through the samples and drawn with braille dots, with a faint fill under each curve. The mono and ASCII themes draw the same curves with characters. The scale eases over half a second, so a new peak grows into place instead of jumping. The two sides have a scale of their own because total traffic includes the billable part, and one shared height would flatten the billable curve.
+Billable traffic is drawn above a dim center line and total traffic below it. Each side scales to the peak in the window, so the peak reaches the edge of its half, and the peak value is labelled where it happened. The label slides sideways with the peak column and stays inside the plot. The corner shows the average of the newest five samples for each side, and the arrow is bright while that side carries traffic. Curves are smoothed through the samples and drawn with braille dots, with a faint fill under each curve. The mono and ASCII themes draw the same curves with characters. The scale eases over half a second, so a new peak grows into place instead of jumping. The two sides have a scale of their own because total traffic includes the billable part, and one shared height would flatten the billable curve.
 
 The provider reports billable and total bytes, but no separate upload and download counters and no packet counts. The panel therefore draws one curve per side and labels the sides `billable` and `total` instead of `up` and `down`. A provider that does not send the total figures gets `total not reported` in the footer and a billable curve above the line.
 
-## Colour theme
+## Color theme
 
 Press `m` and step the `Theme` row, or name a theme on the command line with `--theme <name>`. The row applies the theme to the screen behind the menu as you step, so the screen is the preview. The choice is saved in `~/.config/urnet-tools/top.conf` as `theme` and the next start uses it. `urnet-tools top --theme neon` saves the same way.
 
 The names are `default`, `nord`, `gruvbox`, `dracula`, `solarized-dark`, `tokyo-night`, `high-contrast`, `colorblind`, `neon` and `mono`. `default` follows the terminal's own palette and is the choice on a fresh install. `mono` is what `NO_COLOR` or a dumb terminal selects, and that environment choice outranks a saved one.
 
-`neon` is built from the URnetwork brand palette: green `#87FB67` for traffic, pale lime `#EFF7BB` for warnings, coral `#FF6F7A` for errors and packets, and blue `#007ACC` and `#0099FF` for IPv6 and H1+. It is drawn for a dark terminal. The theme carries its own approximation for a 256 colour terminal and its own base 16 colours, so the accents keep their hue where the terminal cannot show truecolor.
+`neon` is built from the URnetwork brand palette: green `#87FB67` for traffic, pale lime `#EFF7BB` for warnings, coral `#FF6F7A` for errors and packets, and blue `#007ACC` and `#0099FF` for IPv6 and H1+. It is drawn for a dark terminal. The theme carries its own approximation for a 256 color terminal and its own base 16 colors, so the accents keep their hue where the terminal cannot show truecolor.
 
 ```bash
 urnet-tools top --theme neon

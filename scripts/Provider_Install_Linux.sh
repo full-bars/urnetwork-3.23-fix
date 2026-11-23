@@ -476,7 +476,7 @@ pr_warn ()
 # install_logo draws the URnetwork wordmark at the start of an interactive
 # install. The artwork is embedded because the installer runs before anything
 # is downloaded, and it is drawn in block characters in the default
-# foreground, so it needs no colour support and NO_COLOR changes nothing.
+# foreground, so it needs no color support and NO_COLOR changes nothing.
 # An unattended run (FORCE=1), output that is not a terminal, and a terminal
 # narrower than the artwork all keep the output the installer printed before.
 install_logo ()

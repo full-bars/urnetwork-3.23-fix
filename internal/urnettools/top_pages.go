@@ -213,8 +213,8 @@ func topStripFit(labels []string, current, width int) []int {
 }
 
 // drawPageStrip paints the strip band and records one hit region per tab. The
-// selected tab is drawn in reverse video on a colour theme and with a leading
-// star on a theme that has neither colour nor attributes.
+// selected tab is drawn in reverse video on a color theme and with a leading
+// star on a theme that has neither color nor attributes.
 func (m *topModel) drawPageStrip(band tui.Rect, b *tui.Buffer, idx []int, current int) {
 	th := m.theme
 	s := b.Sub(band)

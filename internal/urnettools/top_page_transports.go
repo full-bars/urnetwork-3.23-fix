@@ -18,9 +18,9 @@ import (
 // carriers on the wire and stay separate segments here, which is why h1_plus
 // is its own kind and not folded into h1_websocket.
 
-// transportPalette is the colour set of the bar and the legend markers. It is
+// transportPalette is the color set of the bar and the legend markers. It is
 // one small struct on purpose: a theme can hand back different styles without
-// the drawing code below changing. The series colours are the app's: green for
+// the drawing code below changing. The series colors are the app's: green for
 // H3, light blue for H1, the URnetwork blue for the separate H1+ carrier, pink
 // for WhoDis and yellow for its pump.
 type transportPalette struct {
@@ -28,7 +28,7 @@ type transportPalette struct {
 }
 
 // transportsPalette picks the styles for this theme. ASCII and mono draw the
-// bar in plain cells, and the colourblind theme uses the theme's own roles so
+// bar in plain cells, and the colorblind theme uses the theme's own roles so
 // the segments stay tellable apart.
 func transportsPalette(th tui.Theme) transportPalette {
 	if th.ASCII {
@@ -46,7 +46,7 @@ func transportsPalette(th tui.Theme) transportPalette {
 	}
 }
 
-// style is the segment and marker colour of one kind.
+// style is the segment and marker color of one kind.
 func (p transportPalette) style(kind string) tui.Style {
 	switch kind {
 	case "h3":
@@ -190,7 +190,7 @@ func shortSpan(span time.Duration) string {
 }
 
 // drawTransportBar paints the segmented bar on one row: each used kind as a
-// run of block cells, in the palette colour of that kind, so the runs tile the
+// run of block cells, in the palette color of that kind, so the runs tile the
 // whole width. The first and last cells are half blocks, which rounds the ends
 // without leaving a gap. ASCII draws the runs in '#' and an idle window in '-'.
 func drawTransportBar(b *tui.Buffer, y int, shares []TransportWindowShare, pal transportPalette, ascii bool) {
@@ -303,7 +303,7 @@ func transportBarCells(shares []TransportWindowShare, width int) []int {
 }
 
 // drawTransportLegend paints the legend and returns the row below it. Each
-// entry is a filled marker in the kind's colour, its name and its whole
+// entry is a filled marker in the kind's color, its name and its whole
 // percent, packed across the width and wrapped onto further rows while the box
 // has height for them. An idle window says so in place of the entries.
 func drawTransportLegend(b *tui.Buffer, y int, shares []TransportWindowShare, live *LiveTransports, pal transportPalette, th tui.Theme) int {

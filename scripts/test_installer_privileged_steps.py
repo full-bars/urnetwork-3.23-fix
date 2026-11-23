@@ -807,7 +807,7 @@ mkdir() { case "$*" in */stub/.urnetwork*) printf 'mkdir denied\n' >&2; return 1
     def test_logo_printed_on_a_wide_terminal(self):
         out = self._run_logo("120")
         self.assertIn("\u2597\u259f\u2588\u2588\u2588\u2584", out)
-        self.assertNotIn("\x1b[", out, "the wordmark carries no colour codes")
+        self.assertNotIn("\x1b[", out, "the wordmark carries no color codes")
         rows = [line for line in out.splitlines() if line.strip()]
         self.assertEqual(len(rows), 6, f"wordmark rows: {rows}")
 

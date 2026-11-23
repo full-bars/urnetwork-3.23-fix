@@ -8,7 +8,7 @@ import (
 
 // Pages for billable and total traffic split by direction. upload is tx, the
 // bytes the provider sent away from the client, and it is drawn above the
-// centre line. download is rx, the bytes it received toward the client, drawn
+// center line. download is rx, the bytes it received toward the client, drawn
 // below it. Both layers count them that way: the packet path in ip.go and the
 // socket path in net.go. The two pages reuse the Remote renderer, so they get
 // its legends, corner averages and peak labels unchanged.

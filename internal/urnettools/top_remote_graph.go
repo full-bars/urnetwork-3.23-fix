@@ -10,7 +10,7 @@ import (
 )
 
 // The Remote panel draws the mirrored transfer chart of the URnetwork client's
-// statistics screen. One direction is drawn above a centre line and the other
+// statistics screen. One direction is drawn above a center line and the other
 // below it, each as a curve through the samples, with a faint fill under it and
 // the peak value labelled where it happened. The newest data is on the right
 // and slides left as the clock moves.
@@ -70,7 +70,7 @@ type remoteChart struct {
 	Window   time.Duration
 	Scales   map[string]*remoteScale
 	ASCII    bool
-	Dim      tui.Style // centre line, legends and the peak labels
+	Dim      tui.Style // center line, legends and the peak labels
 	Text     tui.Style // the direction arrows when a direction is active
 }
 
@@ -110,7 +110,7 @@ func (s *remoteScale) valueAt(now time.Time) float64 {
 }
 
 // remoteLayout places the parts of one frame: the legends and the up averages
-// on the first row, the up plot, the centre line, the down plot and the down
+// on the first row, the up plot, the center line, the down plot and the down
 // averages on the last row. A peak label row is reserved inside a half when the
 // half is tall enough, so a label never sits on the curve.
 type remoteChartLayout struct {
@@ -316,7 +316,7 @@ func (c remoteChart) drawLegend(b *tui.Buffer, row int, dir []remoteSeries, arro
 }
 
 // remoteSegment is one piece of the corner figures: a formatted average in its
-// series colour, or the direction arrow. packets marks a packet rate, which is
+// series color, or the direction arrow. packets marks a packet rate, which is
 // dropped before the bytes rate when the row is too narrow for both.
 type remoteSegment struct {
 	text    string
@@ -480,7 +480,7 @@ func anyPositive(vals []float64) bool {
 }
 
 // drawHalfASCII is the fallback for terminals without braille: one column per
-// cell, the curve drawn as a run of glyphs from the centre outward.
+// cell, the curve drawn as a run of glyphs from the center outward.
 func (c remoteChart) drawHalfASCII(b *tui.Buffer, s remoteSeries, pts []remotePoint, scale float64, up bool, y0, rows, idx int) {
 	if scale <= 0 {
 		scale = 1
@@ -537,7 +537,7 @@ func (c remoteChart) drawPeak(b *tui.Buffer, dir []remoteSeries, up bool, row in
 	b.Put(text, x, row, c.Dim)
 }
 
-// remoteCanvas collects the dots of one half. A cell can carry only one colour,
+// remoteCanvas collects the dots of one half. A cell can carry only one color,
 // so the curve wins over the fill and a later series wins over an earlier one
 // in the few cells where two curves cross.
 type remoteCanvas struct {
@@ -571,7 +571,7 @@ func (cv *remoteCanvas) setFill(x, y, idx int) {
 
 // plot draws one curve: the value at every dot column, the gap between
 // neighbouring columns filled so the line has no breaks, and a stippled fill
-// between the curve and the centre line.
+// between the curve and the center line.
 func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int) {
 	if scale <= 0 {
 		scale = 1

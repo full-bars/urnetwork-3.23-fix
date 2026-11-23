@@ -56,7 +56,7 @@ func TestTopPageStripDrawsBothTabs(t *testing.T) {
 	}
 }
 
-// A theme with no colour and no attributes marks the current tab with a star
+// A theme with no color and no attributes marks the current tab with a star
 // instead, and carries no attributes anywhere.
 func TestTopPageStripMonoAndASCII(t *testing.T) {
 	clock := &fakeClock{t: topBase}
