@@ -35,6 +35,11 @@ const (
 	remoteDefaultWindow = 60 * time.Second
 	// remoteMinWidth is the narrowest plot that still reads as a chart.
 	remoteMinWidth = 8
+	// remoteByteFloor and remotePacketFloor are the smallest heights a byte
+	// and a packet scale draw against, the client app's values, so a few
+	// bytes or packets of background noise stay near the axis.
+	remoteByteFloor   = 1024
+	remotePacketFloor = 8
 )
 
 // Braille dot bits for one cell, bottom row first, the same packing the
@@ -222,7 +227,11 @@ func remoteScales(c remoteChart) map[string]float64 {
 	peaks := map[string]float64{}
 	for _, dir := range [][]remoteSeries{c.Up, c.Down} {
 		for _, s := range dir {
-			peak := remoteWindowPeak(c, s.Values)
+			floor := float64(remoteByteFloor)
+			if s.Packets {
+				floor = remotePacketFloor
+			}
+			peak := max(remoteWindowPeak(c, s.Values), floor)
 			if peak > peaks[s.Group] {
 				peaks[s.Group] = peak
 			}

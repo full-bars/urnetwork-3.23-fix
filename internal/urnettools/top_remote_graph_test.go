@@ -207,10 +207,11 @@ func TestRemoteScaleEasing(t *testing.T) {
 // TestRemoteScaleEasingInFrame draws the same data at two times and checks the
 // curve rises as the scale eases from the previous peak to the new one.
 func TestRemoteScaleEasingInFrame(t *testing.T) {
-	c := remoteTestChart(remoteFlat(60, 100), nil)
+	c := remoteTestChart(remoteFlat(60, 100*1024), nil)
 	// The previous peak was twice the value, so the first frame draws the
-	// curve at half height and the completed ease draws it at the top.
-	c.Scales["billable"] = &remoteScale{from: 200, to: 200, start: c.Now, set: true}
+	// curve at half height and the completed ease draws it at the top. Both
+	// are above the byte floor.
+	c.Scales["billable"] = &remoteScale{from: 200 * 1024, to: 200 * 1024, start: c.Now, set: true}
 	rowOf := func(ch remoteChart) int {
 		b := tui.New(40, 10)
 		drawRemoteChart(b, ch)

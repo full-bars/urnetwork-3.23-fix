@@ -40,3 +40,51 @@ func TestRemoteZeroLiesOnTheCenterLine(t *testing.T) {
 		t.Fatalf("only the burst may touch the center line, got %d and %d cells:\n%s", up, down, b.String())
 	}
 }
+
+// topmostDots is the first row from the top of b that carries a dot within
+// rows [from, to), or to when none does.
+func topmostDots(b *tui.Buffer, from, to int) int {
+	for y := from; y < to; y++ {
+		if rowDots(b, y) > 0 {
+			return y
+		}
+	}
+	return to
+}
+
+// Background noise stays near the axis. Like the client app, a byte scale
+// never goes below 1 KiB/s and a packet scale never below 8 pkt/s, so a few
+// bytes or packets do not fill a half.
+func TestRemoteScaleFloors(t *testing.T) {
+	noise := make([]float64, 60)
+	for i := range noise {
+		noise[i] = float64(20 + (i%3)*30) // 20 to 80 B/s
+	}
+	c := remoteTestChart(noise, nil)
+	b := tui.New(60, 15)
+	drawRemoteChart(b, c)
+	l := remoteLayout(15)
+	// 80 B/s of a 1 KiB/s scale is under a tenth of the half.
+	if top := topmostDots(b, l.upY, l.center); top < l.center-1 {
+		t.Fatalf("80 B/s of noise reaches row %d of a half that starts at %d:\n%s", top, l.upY, b.String())
+	}
+
+	pkts := remoteFlat(60, 2)
+	c = remoteTestChart(remoteFlat(60, 0), nil)
+	c.Up = append(c.Up, remoteSeries{Style: remotePink, Group: "billable packets", Packets: true, Values: pkts})
+	b = tui.New(60, 15)
+	drawRemoteChart(b, c)
+	// 2 pkt/s of an 8 pkt/s scale is a quarter of the half.
+	rows := l.center - l.upY
+	if top := topmostDots(b, l.upY, l.center); top < l.center-(rows+3)/4-1 {
+		t.Fatalf("2 pkt/s reaches row %d of a half from %d to %d:\n%s", top, l.upY, l.center, b.String())
+	}
+
+	// Above the floor the scale is the window peak, as before.
+	c = remoteTestChart(remoteSpike(60, 30, 4096, 0), nil)
+	b = tui.New(60, 15)
+	drawRemoteChart(b, c)
+	if top := topmostDots(b, l.upY, l.center); top != l.upY {
+		t.Fatalf("a 4 KiB/s peak must reach the top of its half, reached row %d:\n%s", top, b.String())
+	}
+}
