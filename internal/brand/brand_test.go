@@ -172,3 +172,53 @@ func TestBeside(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// gridText joins the glyphs of a grid the way Render lays out rows.
+func gridText(rows [][]Cell) string {
+	lines := make([]string, len(rows))
+	for i, row := range rows {
+		var line strings.Builder
+		for _, c := range row {
+			line.WriteRune(c.Glyph)
+		}
+		lines[i] = strings.TrimRight(line.String(), " ")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// TestGridMatchesRender checks that the cells a full screen view paints carry
+// the glyphs of the mono rendering, keep the asset's size, and carry color
+// only where the depth allows it.
+func TestGridMatchesRender(t *testing.T) {
+	mono := Capabilities{Depth: Mono, NoColor: true, UTF8: true}
+	for _, name := range assetNames {
+		a := Assets[name]
+		if got, want := gridText(Grid(a, mono)), Render(a, mono); got != want {
+			t.Errorf("%s: mono grid glyphs differ from the rendering\n got: %q\nwant: %q", name, got, want)
+		}
+		for _, caps := range []Capabilities{{Depth: TrueColor, UTF8: true}, {Depth: Color16, UTF8: true}, mono} {
+			grid := Grid(a, caps)
+			if len(grid) != a.Rows {
+				t.Fatalf("%s: grid has %d rows, want %d", name, len(grid), a.Rows)
+			}
+			colored := false
+			for _, row := range grid {
+				if len(row) != a.Cols {
+					t.Fatalf("%s: grid row has %d cells, want %d", name, len(row), a.Cols)
+				}
+				for _, c := range row {
+					colored = colored || c.FG != nil || c.BG != nil
+				}
+			}
+			if caps.Depth <= Color16 && colored {
+				t.Errorf("%s: a depth %d grid carries color", name, caps.Depth)
+			}
+			if caps.Depth == TrueColor && a.Kind == "halfblock" && !colored {
+				t.Errorf("%s: a truecolor grid carries no color", name)
+			}
+		}
+	}
+	if Grid(Assets["icon-flat-12x6"], Capabilities{Depth: TrueColor}) != nil {
+		t.Error("a terminal without UTF-8 must get no grid")
+	}
+}
