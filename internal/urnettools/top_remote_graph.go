@@ -78,8 +78,10 @@ type remoteChart struct {
 	// as the client app does, instead of each series group on its own.
 	Shared bool
 	ASCII  bool
-	Dim    tui.Style // center line, legends and the peak labels
-	Text   tui.Style // the direction arrows when a direction is active
+	// dots is the plot width in braille dot columns, set by drawRemoteChart.
+	dots int
+	Dim  tui.Style // center line, legends and the peak labels
+	Text tui.Style // the direction arrows when a direction is active
 }
 
 // remoteScale eases the height the plot scales to. A new window peak starts a
@@ -192,6 +194,7 @@ func drawRemoteChart(b *tui.Buffer, c remoteChart) {
 	if c.Interval <= 0 {
 		c.Interval = time.Second
 	}
+	c.dots = 2 * w
 	scales := remoteScales(c)
 	l := remoteLayout(w, h)
 
@@ -268,7 +271,17 @@ func remoteScales(c remoteChart) map[string]float64 {
 			if s.Packets {
 				floor = remotePacketFloor
 			}
-			peak := max(remoteWindowPeak(c, s.Values), floor)
+			peak := remoteWindowPeak(c, s.Values)
+			if c.dots > 0 {
+				// The curve draws smoothed bucket averages, so its height
+				// follows the top of the drawn curve. The peak label still
+				// names the highest sample.
+				peak = 0
+				for _, v := range remoteSmoothColumns(remotePointsOf(c, s.Values, c.dots), c.dots) {
+					peak = max(peak, v)
+				}
+			}
+			peak = max(peak, floor)
 			if key := c.scaleKey(s); peak > peaks[key] {
 				peaks[key] = peak
 			}
@@ -570,7 +583,7 @@ func (c remoteChart) drawPeak(b *tui.Buffer, dir []remoteSeries, up bool, row in
 	if row < 0 || len(dir) == 0 {
 		return
 	}
-	pts := remotePointsOf(c, dir[0].Values, 2*b.Width())
+	pts := remotePointsIn(c, dir[0].Values, 2*b.Width(), math.MaxInt)
 	if len(pts) == 0 {
 		return
 	}
@@ -701,14 +714,18 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int,
 // highest sample.
 func remoteSmoothColumns(pts []remotePoint, dots int) []float64 {
 	raw := make([]float64, dots)
+	top := 0.0
+	for _, p := range pts {
+		top = max(top, p.v)
+	}
 	for x := range raw {
-		raw[x] = max(0, remoteMonotoneAt(pts, float64(x)))
+		raw[x] = min(max(0, remoteSplineAt(pts, float64(x))), top)
 	}
 	if len(pts) < 2 {
 		return raw
 	}
 	spacing := (pts[len(pts)-1].x - pts[0].x) / float64(len(pts)-1)
-	sigma := 0.25 * spacing
+	sigma := spacing
 	if sigma < 0.5 {
 		return raw
 	}
@@ -732,6 +749,42 @@ func remoteSmoothColumns(pts []remotePoint, dots int) []float64 {
 		out[x] = max(sum/wsum, 0)
 	}
 	return out
+}
+
+// remoteSplineAt is the Catmull-Rom spline through pts at dot column x, held
+// flat outside the sampled range. Its tangent at a point follows both
+// neighbors, so a run of a few points reads as one smooth curve instead of a
+// step at every point. The caller clamps it to zero and the highest point.
+func remoteSplineAt(pts []remotePoint, x float64) float64 {
+	n := len(pts)
+	switch {
+	case n == 0:
+		return 0
+	case n == 1 || x <= pts[0].x:
+		return pts[0].v
+	case x >= pts[n-1].x:
+		return pts[n-1].v
+	}
+	i := sort.Search(n-1, func(k int) bool { return pts[k+1].x >= x })
+	if i >= n-1 {
+		i = n - 2
+	}
+	h := pts[i+1].x - pts[i].x
+	if h <= 0 {
+		return pts[i].v
+	}
+	at := func(k int) remotePoint { return pts[min(max(k, 0), n-1)] }
+	tangent := func(k int) float64 {
+		a, b := at(k-1), at(k+1)
+		if d := b.x - a.x; d > 0 {
+			return (b.v - a.v) / d
+		}
+		return 0
+	}
+	t := (x - pts[i].x) / h
+	m0, m1 := tangent(i)*h, tangent(i+1)*h
+	t2, t3 := t*t, t*t*t
+	return (2*t3-3*t2+1)*pts[i].v + (t3-2*t2+t)*m0 + (-2*t3+3*t2)*pts[i+1].v + (t3-t2)*m1
 }
 
 // remoteMonotoneAt is the monotone cubic through pts at dot column x, held
@@ -828,6 +881,21 @@ func (cv *remoteCanvas) draw(b *tui.Buffer, y0 int) {
 // held out to the clock, and bucketed by absolute time when there are more
 // samples than dot columns so a completed column never changes as time moves.
 func remotePointsOf(c remoteChart, vals []float64, dots int) []remotePoint {
+	return remotePointsIn(c, vals, dots, remoteDrawBuckets(dots))
+}
+
+// remoteDrawBuckets is how many points a curve is drawn through: one bucket for
+// about three dot columns. A window with more samples than that is
+// averaged into buckets, so a noisy one second series at 5m or 15m reads as
+// smoothly as the 1m view, and the spline has room to round off between
+// points.
+func remoteDrawBuckets(dots int) int {
+	return max(2, dots/3)
+}
+
+// remotePointsIn is remotePointsOf with an explicit bucket count. The peak
+// label passes no limit, so it names the highest real sample.
+func remotePointsIn(c remoteChart, vals []float64, dots, buckets int) []remotePoint {
 	if dots < 2 || len(vals) == 0 || c.Window <= 0 || c.Interval <= 0 {
 		return nil
 	}
@@ -862,8 +930,8 @@ func remotePointsOf(c remoteChart, vals []float64, dots int) []remotePoint {
 	if last := samples[len(samples)-1]; last.at < c.Now.UnixNano() {
 		samples = append(samples, remoteSample{c.Now.UnixNano(), last.v})
 	}
-	if len(samples) > dots {
-		samples = remoteBucketize(samples, dots, c.Window, windowStart.UnixNano())
+	if len(samples) > buckets {
+		samples = remoteBucketize(samples, buckets, c.Window, windowStart.UnixNano())
 	}
 	pts := make([]remotePoint, len(samples))
 	span := float64(c.Window)
@@ -875,7 +943,8 @@ func remotePointsOf(c remoteChart, vals []float64, dots int) []remotePoint {
 }
 
 // remoteBucketize averages runs of samples into at most dots buckets aligned to
-// absolute time. The oldest bucket is dropped when it straddles the window
+// absolute time. It averages, never sums or takes the maximum, so a bucket is
+// the mean rate over its span. The oldest bucket is dropped when it straddles the window
 // start, since it would shimmer as samples fall off the left edge.
 func remoteBucketize(samples []remoteSample, dots int, window time.Duration, windowStart int64) []remoteSample {
 	width := int64(window) / int64(dots)

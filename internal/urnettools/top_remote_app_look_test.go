@@ -114,8 +114,8 @@ func TestRemoteTinyRatesLieOnTheBaseline(t *testing.T) {
 	// of one dot of it.
 	l := remoteLayout(60, 15)
 	dots := float64(l.upRows*4 + 1)
-	vals := remoteFlat(60, 0.7/dots*(1<<20))
-	vals[30] = 1 << 20
+	// The burst is a few seconds wide, so the smoothing keeps its height.
+	vals := remoteSpike(60, 30, 1<<20, 0.7/dots*(1<<20))
 	c := remoteTestChart(vals, nil)
 	b := tui.New(60, 15)
 	drawRemoteChart(b, c)

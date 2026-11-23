@@ -142,8 +142,10 @@ func TestTopPacketSeriesScalesOnItsOwnPeak(t *testing.T) {
 	if scale == nil {
 		t.Fatal("no shared packet scale state")
 	}
-	if got := scale.valueAt(m.now()); got-want > 1e-6 || want-got > 1e-6 {
-		t.Fatalf("the packet scale is %f, want the larger packet peak %f", got, want)
+	// The scale follows the top of the drawn curve, which is the smoothed
+	// bucket average, so it sits a little under the highest sample.
+	if got := scale.valueAt(m.now()); got > want+1e-6 || got < 0.8*want {
+		t.Fatalf("the packet scale is %f, want just under the larger packet peak %f", got, want)
 	}
 	bytesStyle, packetsStyle := remotePalette(th)
 	byteRows, byteCells := styleCells(b, bytesStyle)
