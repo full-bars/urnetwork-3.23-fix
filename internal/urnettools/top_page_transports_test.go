@@ -230,7 +230,7 @@ func TestTopTransportsPageSplitsH1FromH1Plus(t *testing.T) {
 			t.Fatalf("page does not show %q:\n%s", want, text)
 		}
 	}
-	// The two carriers are their own bar runs, so both colours appear.
+	// The two carriers are their own bar runs, so both colors appear.
 	shares := transportWindowShares(prev, cur)
 	cells := transportBarCells(shares, 40)
 	for i, s := range shares {

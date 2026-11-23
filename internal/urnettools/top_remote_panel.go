@@ -7,7 +7,7 @@ import (
 )
 
 // The Remote panel is the mirrored transfer chart, wired to the same provider
-// history the throughput graphs draw. Billable traffic goes above the centre
+// history the throughput graphs draw. Billable traffic goes above the center
 // line and total traffic below it, which is what the provider reports today:
 // there is no separate upload and download counter and no packet counter, so
 // the pink packet curve and the two halves per direction are left out rather
@@ -38,7 +38,7 @@ func (m *topModel) remoteSplit(r tui.Rect) (graphs, remote tui.Rect, ok bool) {
 	return rows[0], rows[1], true
 }
 
-// remotePalette is the pair of curve colours: bytes in the client app's green
+// remotePalette is the pair of curve colors: bytes in the client app's green
 // and packets in its pink, or the theme's own two roles where the theme carries
 // no fixed palette. The pink is one value for every packet curve, so a theme
 // lane can swap it in one place.

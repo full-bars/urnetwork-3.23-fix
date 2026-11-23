@@ -11,7 +11,7 @@ import (
 	"github.com/urnetwork/connect/internal/tui"
 )
 
-// remoteGreen and remotePink stand in for the two curve colours.
+// remoteGreen and remotePink stand in for the two curve colors.
 var (
 	remoteGreen = tui.Style{FG: tui.Xterm(120)}
 	remotePink  = tui.Style{FG: tui.Xterm(213)}
@@ -234,7 +234,7 @@ func TestRemoteScaleEasingInFrame(t *testing.T) {
 	}
 }
 
-// TestRemoteStyles checks the colours the braille dots and the fill carry.
+// TestRemoteStyles checks the colors the braille dots and the fill carry.
 func TestRemoteStyles(t *testing.T) {
 	c := remoteTestChart(remoteSpike(60, 30, 100*1024, 0), nil)
 	b := tui.New(40, 10)
@@ -255,14 +255,14 @@ func TestRemoteStyles(t *testing.T) {
 		}
 	}
 	if green == 0 {
-		t.Fatal("no braille cell carries the curve colour")
+		t.Fatal("no braille cell carries the curve color")
 	}
 	if dim == 0 {
 		t.Fatal("the fill under the curve carries no dim braille cell")
 	}
 }
 
-// TestRemoteTwoSeries drops a second series of another colour into each half,
+// TestRemoteTwoSeries drops a second series of another color into each half,
 // which is the shape a packet curve arrives in.
 func TestRemoteTwoSeries(t *testing.T) {
 	c := remoteTestChart(nil, nil)
@@ -284,7 +284,7 @@ func TestRemoteTwoSeries(t *testing.T) {
 		}
 	}
 	if !seen["pink"] || !seen["green"] {
-		t.Fatalf("two series drawn as one colour: %v", seen)
+		t.Fatalf("two series drawn as one color: %v", seen)
 	}
 	if got := strings.TrimRight(b.String(), "\n"); !strings.Contains(got, "billable pkt ▲") {
 		t.Fatalf("legend names only one series:\n%s", got)
@@ -364,8 +364,8 @@ func TestRemoteRenderProof(t *testing.T) {
 	up := remoteFlat(60, 0)
 	down := remoteFlat(60, 0)
 	// bursty traffic, like a real client: narrow peaks on a quiet floor
-	spike := func(i int, centre, width, height float64) float64 {
-		d := (float64(i) - centre) / width
+	spike := func(i int, center, width, height float64) float64 {
+		d := (float64(i) - center) / width
 		return height * math.Exp(-d*d)
 	}
 	for i := 0; i < 60; i++ {
@@ -389,7 +389,7 @@ func TestRemoteRenderProof(t *testing.T) {
 }
 
 // remoteANSI renders a buffer with SGR codes, so a screenshot tool can show the
-// panel in the colours a terminal does.
+// panel in the colors a terminal does.
 func remoteANSI(b *tui.Buffer) string {
 	var out strings.Builder
 	for y := 0; y < b.Height(); y++ {

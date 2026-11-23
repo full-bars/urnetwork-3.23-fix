@@ -509,12 +509,12 @@ func TestLingerBannerIsPaintedBoldInTheBadStyle(t *testing.T) {
 		t.Fatalf("the banner is not bold: %+v", cell.Style)
 	}
 	if cell.Style.FG != m.theme.Bad.FG {
-		t.Fatalf("the banner fg = %+v, want the theme's bad colour %+v", cell.Style.FG, m.theme.Bad.FG)
+		t.Fatalf("the banner fg = %+v, want the theme's bad color %+v", cell.Style.FG, m.theme.Bad.FG)
 	}
-	// The mono theme carries no colour, so only the text says it.
+	// The mono theme carries no color, so only the text says it.
 	m.theme = mustTheme(t, "mono")
 	renderFresh(m, b)
 	if cell := b.Cell(0, 1); cell.Style.FG != (tui.Color{}) || cell.Style.BG != (tui.Color{}) {
-		t.Fatalf("the mono banner carries colour: %+v", cell.Style)
+		t.Fatalf("the mono banner carries color: %+v", cell.Style)
 	}
 }

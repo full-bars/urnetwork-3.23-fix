@@ -23,7 +23,7 @@ var depths = []struct {
 	{"mono", Mono},
 }
 
-// TestGolden compares every asset and colour depth against a committed rendering.
+// TestGolden compares every asset and color depth against a committed rendering.
 func TestGolden(t *testing.T) {
 	for _, name := range assetNames {
 		a := Assets[name]
@@ -53,8 +53,8 @@ func TestGolden(t *testing.T) {
 	}
 }
 
-// TestRenderedWidth checks that a coloured rendering still occupies exactly the
-// cell width the asset declares, since colour sequences add no cells.
+// TestRenderedWidth checks that a colored rendering still occupies exactly the
+// cell width the asset declares, since color sequences add no cells.
 func TestRenderedWidth(t *testing.T) {
 	for _, name := range assetNames {
 		a := Assets[name]
@@ -79,7 +79,7 @@ func TestRenderedWidth(t *testing.T) {
 	}
 }
 
-// TestNoColorWidth checks the block shapes survive without colour.
+// TestNoColorWidth checks the block shapes survive without color.
 func TestNoColorWidth(t *testing.T) {
 	for _, name := range assetNames {
 		a := Assets[name]

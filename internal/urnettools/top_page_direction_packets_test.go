@@ -79,15 +79,15 @@ func TestTopBillablePacketsGolden(t *testing.T) {
 	}
 }
 
-// The mono theme carries no colour and draws ASCII, so the packet curve has to
+// The mono theme carries no color and draws ASCII, so the packet curve has to
 // read by its glyph alone.
 func TestTopBillablePacketsMonoGolden(t *testing.T) {
 	_, _, text := packetsPageModel(t, mustTheme(t, "mono"), packetsFixture(t), 80, 24, "billable")
 	assertGolden(t, "top_page_billable_packets_mono_80x24", text)
 }
 
-// A colour theme on a terminal without block glyphs: the same page with the
-// ASCII fallback and the colours kept.
+// A color theme on a terminal without block glyphs: the same page with the
+// ASCII fallback and the colors kept.
 func TestTopBillablePacketsASCIIGolden(t *testing.T) {
 	th := tui.DefaultTheme()
 	th.ASCII = true
@@ -96,7 +96,7 @@ func TestTopBillablePacketsASCIIGolden(t *testing.T) {
 }
 
 // The packet curve draws with its own glyph in the ASCII fallback, so it stays
-// apart from the byte curve with no colour to tell them apart.
+// apart from the byte curve with no color to tell them apart.
 func TestTopPacketSeriesASCIIGlyph(t *testing.T) {
 	count := func(snap *NodeSnapshot) int {
 		th := tui.DefaultTheme()
@@ -160,14 +160,14 @@ func TestTopPacketSeriesScalesOnItsOwnPeak(t *testing.T) {
 		t.Fatalf("curves are missing: bytes %d cells, packets %d cells", byteCells, pktCells)
 	}
 	// Both curves reach their own peak, so their top rows are close. One shared
-	// scale would leave the packet curve near the centre line, half a page away.
+	// scale would leave the packet curve near the center line, half a page away.
 	if d := byteRows[0] - pktRows[0]; d > 3 || d < -3 {
 		t.Fatalf("the packet curve peaks %d rows from the byte curve: %v vs %v", d, pktRows, byteRows)
 	}
 }
 
 // The corner figures carry both directions the way the client app does: bytes
-// then packets, each in its own colour, then the arrow. The packet part is
+// then packets, each in its own color, then the arrow. The packet part is
 // muted when the direction carries no packets.
 func TestTopCornerFiguresCarryPackets(t *testing.T) {
 	s := packetsFixture(t)
@@ -188,7 +188,7 @@ func TestTopCornerFiguresCarryPackets(t *testing.T) {
 			t.Fatalf("%s: the corner has no %q after %q:\n%s", c.name, c.fig, bytesFig, text)
 		}
 	}
-	// The packet figure is painted in the packet colour on the averages row.
+	// The packet figure is painted in the packet color on the averages row.
 	found := false
 	want := tui.PacketRate(remoteAverage(pUp))
 Want:
@@ -205,7 +205,7 @@ Want:
 		start := len([]rune(row[:at]))
 		for x := start; x < start+len([]rune(want)); x++ {
 			if c := b.Cell(x, y); c.Style != packetsStyle {
-				t.Fatalf("the packet figure cell %d,%d is %+v, want the packet colour", x, y, c.Style)
+				t.Fatalf("the packet figure cell %d,%d is %+v, want the packet color", x, y, c.Style)
 			}
 		}
 		found = true
@@ -231,7 +231,7 @@ func TestTopZeroPackets(t *testing.T) {
 	}
 	_, packetsStyle := remotePalette(th)
 	if rows, cells := styleCells(b, packetsStyle); cells != 0 {
-		t.Fatalf("zero packets drew %d coloured cells on rows %v", cells, rows)
+		t.Fatalf("zero packets drew %d colored cells on rows %v", cells, rows)
 	}
 }
 

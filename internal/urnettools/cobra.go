@@ -299,14 +299,14 @@ Keys:
   - and +          refresh faster or slower
   w                zoom the graphs to the last 15 seconds
   g                show where the provider's goroutines are parked
-  m                menu for the colour theme and graph style (remembered)
+  m                menu for the color theme and graph style (remembered)
   ?                help`,
 		"  urnet-tools top\n  urnet-tools top --interval 500ms\n  urnet-tools top --network mynetwork --copy",
 		helpFlag{name: "interval", value: true, usage: "refresh every `duration`, default 1s, minimum 100ms"},
 		helpFlag{name: "no-mouse", usage: "turn off mouse support"},
 		helpFlag{name: "copy", usage: "on quit, save the last screen as a text file"},
 		helpFlag{name: "plain", usage: "with --copy, use ASCII instead of box characters"},
-		helpFlag{name: "theme", value: true, usage: "colour theme; saved for next time"},
+		helpFlag{name: "theme", value: true, usage: "color theme; saved for next time"},
 	)
 }
 

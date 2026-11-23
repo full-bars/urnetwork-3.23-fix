@@ -8,11 +8,11 @@ import (
 
 // neonBackdrop is the near black background the neon theme is designed for.
 // The theme does not paint a background of its own, so the contrast checks
-// below measure every role against this colour.
+// below measure every role against this color.
 const neonBackdrop = "#0A0B0F"
 
 // xtermHex and ansiHex are the palette entries the neon mapping uses, spelled
-// out so a test can measure the contrast of the 256 and 16 colour variants.
+// out so a test can measure the contrast of the 256 and 16 color variants.
 var (
 	xtermHex = map[uint8]string{
 		32:  "#0087d7", // cube, IPv6 blue
@@ -66,7 +66,7 @@ func relativeLuminance(h string) float64 {
 	return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b)
 }
 
-// contrastRatio is (Lmax+0.05)/(Lmin+0.05) for two hex colours (>= 1).
+// contrastRatio is (Lmax+0.05)/(Lmin+0.05) for two hex colors (>= 1).
 func contrastRatio(a, b string) float64 {
 	la, lb := relativeLuminance(a), relativeLuminance(b)
 	if la < lb {
@@ -120,7 +120,7 @@ func TestNeonRolesComplete(t *testing.T) {
 	for i := 0; i < typ.NumField(); i++ {
 		switch typ.Field(i).Name {
 		case "Name", "Frame", "ASCII":
-			continue // not colours
+			continue // not colors
 		}
 		if base.Field(i).IsZero() {
 			continue // the default theme does not use this role
@@ -135,7 +135,7 @@ func TestNeonRolesComplete(t *testing.T) {
 		}
 	}
 	if th := NeonTheme(); th.IconOK == 0 || th.IconWarn == 0 || th.IconBad == 0 {
-		t.Error("neon icons must be set, so state is never read by colour alone")
+		t.Error("neon icons must be set, so state is never read by color alone")
 	}
 }
 
@@ -150,7 +150,7 @@ func TestNeonContrast(t *testing.T) {
 	xtermOf := func(t *testing.T, c Color) string {
 		t.Helper()
 		if c.Kind != Color256 {
-			t.Fatalf("colour is not xterm 256: %+v", c)
+			t.Fatalf("color is not xterm 256: %+v", c)
 		}
 		h, ok := xtermHex[uint8(c.Value)]
 		if !ok {
@@ -161,7 +161,7 @@ func TestNeonContrast(t *testing.T) {
 	ansiOf := func(t *testing.T, c Color) string {
 		t.Helper()
 		if c.Kind != Color16 {
-			t.Fatalf("colour is not ANSI 16: %+v", c)
+			t.Fatalf("color is not ANSI 16: %+v", c)
 		}
 		h, ok := ansiHex[uint8(c.Value)]
 		if !ok {
@@ -210,7 +210,7 @@ func TestNeonTheme256Mapping(t *testing.T) {
 	}
 	for name, c := range neonRoles(NeonThemeDepth(Depth256)) {
 		if c.Kind != Color256 {
-			t.Errorf("%s is not an xterm 256 colour: %+v", name, c)
+			t.Errorf("%s is not an xterm 256 color: %+v", name, c)
 			continue
 		}
 		if uint8(c.Value) != want[name] {
@@ -219,7 +219,7 @@ func TestNeonTheme256Mapping(t *testing.T) {
 	}
 }
 
-// TestNeonTheme16Mapping pins the base ANSI colour chosen for every role.
+// TestNeonTheme16Mapping pins the base ANSI color chosen for every role.
 func TestNeonTheme16Mapping(t *testing.T) {
 	want := map[string]uint8{
 		"ok": 10, "warn": 11, "bad": 9, "dim": 8, "accent": 14,
@@ -228,7 +228,7 @@ func TestNeonTheme16Mapping(t *testing.T) {
 	}
 	for name, c := range neonRoles(NeonThemeDepth(Depth16)) {
 		if c.Kind != Color16 {
-			t.Errorf("%s is not an ANSI 16 colour: %+v", name, c)
+			t.Errorf("%s is not an ANSI 16 color: %+v", name, c)
 			continue
 		}
 		if uint8(c.Value) != want[name] {
@@ -246,7 +246,7 @@ func TestNeonSeriesAreDistinct(t *testing.T) {
 		for _, name := range []string{"seriesBytes", "seriesPkts", "seriesV6", "seriesH1"} {
 			c := roles[name]
 			if prev, ok := seen[c.Value]; ok {
-				t.Errorf("depth %d: %s and %s share a colour", depth, prev, name)
+				t.Errorf("depth %d: %s and %s share a color", depth, prev, name)
 			}
 			seen[c.Value] = name
 		}
@@ -298,7 +298,7 @@ func TestDepthFromEnv(t *testing.T) {
 			t.Errorf("%v: depth = %v, want %v", c.env, got, c.want)
 		}
 	}
-	// The environment built theme keeps the neon name and its own colour kind,
+	// The environment built theme keeps the neon name and its own color kind,
 	// so the m menu shows the right entry after a cycle.
 	th := NeonThemeFromEnv(func(k string) string { return map[string]string{"TERM": "xterm-256color"}[k] })
 	if th.Name != "neon" || th.OK.FG.Kind != Color256 {

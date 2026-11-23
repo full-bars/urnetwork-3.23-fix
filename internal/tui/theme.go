@@ -44,9 +44,9 @@ type Theme struct {
 	// caller falls back to its own.
 	IconOK, IconWarn, IconBad rune
 	// SeriesBytesFG, SeriesPacketsFG, SeriesV6FG and SeriesH1FG are the
-	// graph curve colours: green for byte traffic, pink for packets, blue for
+	// graph curve colors: green for byte traffic, pink for packets, blue for
 	// IPv6 and H1+. Zero means the theme has no fixed palette and callers fall
-	// back to their own colours.
+	// back to their own colors.
 	SeriesBytesFG, SeriesPacketsFG, SeriesV6FG, SeriesH1FG Color
 }
 
@@ -206,22 +206,22 @@ var themeBuilders = []struct {
 	{"mono", MonoTheme},
 }
 
-// Depth is the colour depth of the terminal.
+// Depth is the color depth of the terminal.
 type Depth int
 
 const (
-	// DepthTrue is 24-bit colour.
+	// DepthTrue is 24-bit color.
 	DepthTrue Depth = iota
-	// Depth256 is the xterm 256 colour palette.
+	// Depth256 is the xterm 256 color palette.
 	Depth256
 	// Depth16 is the base ANSI palette.
 	Depth16
 )
 
-// neonRole is one colour of the neon theme at every depth: the truecolor value
+// neonRole is one color of the neon theme at every depth: the truecolor value
 // the theme is designed in, the xterm 256 entry nearest to it (a cube or gray
 // cell) and the base ANSI index nearest to it. The 256 entry is spelled out so
-// a 256 colour terminal shows the intended hue rather than whatever automatic
+// a 256 color terminal shows the intended hue rather than whatever automatic
 // downsampling picks for it.
 type neonRole struct {
 	hex  string
@@ -265,7 +265,7 @@ func (r neonRole) color(depth Depth) Color {
 func NeonTheme() Theme { return NeonThemeDepth(DepthTrue) }
 
 // NeonThemeDepth returns the neon theme in the best depth the terminal can
-// show, so the accents stay the intended hue on a 256 or 16 colour terminal
+// show, so the accents stay the intended hue on a 256 or 16 color terminal
 // instead of being left to automatic downsampling.
 func NeonThemeDepth(depth Depth) Theme {
 	p := neonPalette
@@ -295,9 +295,9 @@ func NeonThemeFromEnv(getenv func(string) string) Theme {
 }
 
 // DepthFromEnv reads the depth a terminal advertises: COLORTERM truecolor or
-// 24bit means truecolor, a TERM naming direct, truecolor, 24bit or 256 colours
+// 24bit means truecolor, a TERM naming direct, truecolor, 24bit or 256 colors
 // says the same, an empty TERM means mono, and any other TERM is assumed to
-// have the 256 colour palette that the base terminals ship with.
+// have the 256 color palette that the base terminals ship with.
 func DepthFromEnv(getenv func(string) string) Depth {
 	if v := strings.ToLower(getenv("COLORTERM")); v == "truecolor" || v == "24bit" {
 		return DepthTrue
