@@ -13,9 +13,10 @@ import (
 // socket path in net.go. The two pages reuse the Remote renderer, so they get
 // its legends, corner averages and peak labels unchanged.
 //
-// The curves are green only for now. The renderer takes a list of series per
-// half, so the pink packet series slots in beside each curve through that list
-// once the provider reports packet counters, with no other change here.
+// The billable page adds the billable packet rate as a pink series per half,
+// in a scale group of its own so each curve reaches its own peak. The renderer
+// takes a list of series per half, so the packet series needs no other change
+// here. Total traffic has no packet counters, so that page draws bytes only.
 
 // directionAvailable reports whether the provider sends the per-direction
 // block. A provider that predates it leaves Traffic.Directions nil, which is
@@ -33,12 +34,12 @@ func directionGroups(page string) (up, down string) {
 
 // directionData is what a direction page draws: the upload and download
 // histories for one quantity, the time of the newest sample and its spacing.
-// The provider samples every lane once a second beside its total rate, so a
-// lane history has the same shape and time base as TotalHistoryBps. ok is
-// false for a provider that predates the block.
-func (m *topModel) directionData(billable bool) (up, down []float64, newest time.Time, interval time.Duration, ok bool) {
+// It also returns the packet histories (packet rates) for billable traffic;
+// nil when the provider does not report them. ok is false for a provider that
+// predates the block.
+func (m *topModel) directionData(billable bool) (up, down []float64, pUp, pDown []float64, newest time.Time, interval time.Duration, ok bool) {
 	if !m.directionAvailable() {
-		return nil, nil, time.Time{}, 0, false
+		return nil, nil, nil, nil, time.Time{}, 0, false
 	}
 	interval = time.Second
 	if m.snap.Rate.HistoryIntervalSeconds > 0 {
@@ -50,7 +51,14 @@ func (m *topModel) directionData(billable bool) (up, down []float64, newest time
 	} else {
 		up, down = d.TotalTx.HistoryBps, d.TotalRx.HistoryBps
 	}
-	return up, down, m.now().Truncate(interval), interval, true
+	// Pull the billable packet histories from the provider's Traffic.Packets
+	// block. Packets exist only for billable traffic, so the total page gets
+	// none and the packet series is nil there.
+	if m.snap.Traffic != nil && m.snap.Traffic.Packets != nil && billable {
+		pp := m.snap.Traffic.Packets
+		pUp, pDown = pp.BillableTx.HistoryPps, pp.BillableRx.HistoryPps
+	}
+	return up, down, pUp, pDown, m.now().Truncate(interval), interval, true
 }
 
 // billablePageAvailable offers the billable direction page when the provider
@@ -75,7 +83,7 @@ func (m *topModel) drawDirectionPage(b *tui.Buffer, content tui.Rect, id, title 
 	th := m.theme
 	box := tui.DrawBox(b.Sub(content), title, th.Frame, th.Border, th.Accent, th.ASCII)
 	m.record("box:"+id, content)
-	up, down, newest, interval, ok := m.directionData(billable)
+	up, down, pUp, pDown, newest, interval, ok := m.directionData(billable)
 	if !ok {
 		msg := "waiting for the provider"
 		if m.conn == topDisconnected {
@@ -93,11 +101,15 @@ func (m *topModel) drawDirectionPage(b *tui.Buffer, content tui.Rect, id, title 
 	if m.directionScales == nil {
 		m.directionScales = map[string]*remoteScale{}
 	}
-	green, _ := remotePalette(th)
+	bytesStyle, packetStyle := remotePalette(th)
 	upGroup, downGroup := directionGroups(id)
 	chart := remoteChart{
-		Up:       []remoteSeries{{Label: "upload", Style: green, Group: upGroup, Values: up}},
-		Down:     []remoteSeries{{Label: "download", Style: green, Group: downGroup, Values: down}},
+		Up: []remoteSeries{
+			{Label: "upload", Style: bytesStyle, Group: upGroup, Values: up},
+		},
+		Down: []remoteSeries{
+			{Label: "download", Style: bytesStyle, Group: downGroup, Values: down},
+		},
 		Now:      m.now(),
 		Newest:   newest,
 		Interval: interval,
@@ -106,6 +118,26 @@ func (m *topModel) drawDirectionPage(b *tui.Buffer, content tui.Rect, id, title 
 		ASCII:    th.ASCII,
 		Dim:      th.Dim,
 		Text:     th.Accent,
+	}
+	// Add the pink packet series on billable pages only, and only when the
+	// provider reports them (nil Packets means no pink and no packet figure).
+	if billable && m.snap.Traffic != nil && m.snap.Traffic.Packets != nil {
+		chart.Up = append(chart.Up, remoteSeries{
+			Label:   "",
+			Style:   packetStyle,
+			Group:   upGroup + " packets",
+			Glyph:   '+',
+			Packets: true,
+			Values:  pUp,
+		})
+		chart.Down = append(chart.Down, remoteSeries{
+			Label:   "",
+			Style:   packetStyle,
+			Group:   downGroup + " packets",
+			Glyph:   '+',
+			Packets: true,
+			Values:  pDown,
+		})
 	}
 	drawRemoteChart(box, chart)
 }

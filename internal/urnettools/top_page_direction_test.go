@@ -74,7 +74,7 @@ func TestTopDirectionDataMapsUploadToTxAndDownloadToRx(t *testing.T) {
 		{"total", false, d.TotalTx.HistoryBps, d.TotalRx.HistoryBps},
 	}
 	for _, c := range cases {
-		up, down, _, _, ok := m.directionData(c.billable)
+		up, down, _, _, _, _, ok := m.directionData(c.billable)
 		if !ok {
 			t.Fatalf("%s: direction data missing", c.name)
 		}
@@ -100,7 +100,7 @@ func TestTopDirectionPagesHiddenForOldProvider(t *testing.T) {
 	if m.directionAvailable() {
 		t.Fatal("a snapshot without the block reports directions")
 	}
-	if _, _, _, _, ok := m.directionData(true); ok {
+	if _, _, _, _, _, _, ok := m.directionData(true); ok {
 		t.Fatal("directionData reported data without the block")
 	}
 	if m.billablePageAvailable(tui.Rect{}) || m.totalPageAvailable(tui.Rect{}) {
@@ -134,7 +134,7 @@ func TestTopDirectionPagesJoinTheStrip(t *testing.T) {
 func TestTopDirectionPageFigures(t *testing.T) {
 	for _, id := range []string{"billable", "total"} {
 		m, _, text := directionPageModel(t, 120, 40, id)
-		up, down, _, _, ok := m.directionData(id == "billable")
+		up, down, _, _, _, _, ok := m.directionData(id == "billable")
 		if !ok {
 			t.Fatalf("%s: direction data missing", id)
 		}

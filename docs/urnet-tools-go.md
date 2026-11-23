@@ -218,7 +218,9 @@ Two pages split the traffic figures into the two directions. Page 3 draws billab
 - upload is the traffic the provider sent away from the client (`tx`).
 - download is the traffic it received toward the client (`rx`).
 
-The packet path in `ip.go` and the socket path in `net.go` count them the same way. The curves are green. The pink packet series slots in beside them later through the same series list.
+The packet path in `ip.go` and the socket path in `net.go` count them the same way.
+
+Page 3 also draws the billable packet rate as a pink curve beside each byte curve, with the packet curve smaller and drawn under the byte curve so the bytes stay readable. The packet curve scales on its own peak, because a packet rate shares no unit with a byte rate. The corner then shows both figures per direction, bytes first, for example `1.77 KiB/s  42 pkt/s ▲`. The packet figure is muted while that direction carries no packets, and a direction with no packets at all draws no pink curve. The peak labels stay bytes. Page 4 has no packet curve: packets are counted for billable traffic only, and total traffic counts socket reads, which have no packet count.
 
 Both pages use the mirrored chart renderer, so the direction labels, the corner averages and the peak labels work as they do on the Remote page. Each half scales to its own peak, because upload is a fraction of download on most links.
 
