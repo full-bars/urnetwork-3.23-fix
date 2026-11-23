@@ -473,6 +473,44 @@ pr_warn ()
     fi
 }
 
+# install_logo draws the URnetwork wordmark at the start of an interactive
+# install. The artwork is embedded because the installer runs before anything
+# is downloaded, and it is drawn in block characters in the default
+# foreground, so it needs no colour support and NO_COLOR changes nothing.
+# An unattended run (FORCE=1), output that is not a terminal, and a terminal
+# narrower than the artwork all keep the output the installer printed before.
+install_logo ()
+{
+    [ "${FORCE:-0}" = "1" ] && return 0
+    [ -t 1 ] || return 0
+    [ "$(install_logo_columns)" -ge 82 ] || return 0
+    cat <<'URNETWORK_WORDMARK'
+
+▗▟███▄  ▐█▌     ▟█ ▐███████▙▖                ▗▄█                         ███
+███████ ▐█▌     ██ ▐█▌    ▝▜█  ▄▄▄▄█▄ ▗▄██▄▖▗▟██▙▄▄▄ ▄▄▄▗▄▄▖▄▄██▄▖ ▄▄▄▄▙▖███ ▄▄▖
+▜█████▛ ▐█▌     ██ ▐█▙▄▄▄▄▄██  ██▛▜██ ██▛▜██▞▜██▀▐██▗███▐██▐██▛▜██ ██▛██▌███▟██▘
+ ▝▀▀▀▘  ▐█▌     ██ ▐█▛▀▀▀▜█▙   ██▌▐██▐██████▌▐██  ██████▟██▐██▌▐██ ██▌██▌█████▌
+        ▐█▙    ▗██ ▐█▌    ▝▜█  ██▌▐██▝██▌▐██▖▐██▖ ▜███▐███▌▐██▌▟██ ██▌   ███▜██▖
+         ▝▜█████▀  ▐█▌     ▐█  ██▌▐██ ▀████▀ ▝███ ▐███ ███▘ ▀████▀ ██▌   ███▝██▙
+URNETWORK_WORDMARK
+}
+
+# install_logo_columns reports the terminal width. COLUMNS is what an
+# interactive shell already holds, and stty covers the case where it is not
+# exported. Anything unreadable reports 0, which prints no artwork.
+install_logo_columns ()
+{
+    logo_cols="${COLUMNS:-}"
+    if [ -z "$logo_cols" ] && [ -t 1 ]; then
+        logo_size="$(stty size < /dev/tty 2>/dev/null)" || logo_size=""
+        logo_cols="${logo_size#* }"
+    fi
+    case "$logo_cols" in
+        ''|*[!0-9]*) logo_cols=0 ;;
+    esac
+    echo "$logo_cols"
+}
+
 opt_requires_arg ()
 {
     pr_err "Option '%s' requires an argument" "$1"
@@ -2641,6 +2679,8 @@ do_install ()
     : "${tag:=latest}"
     : "${no_modify_bashrc:=0}"
     original_operation="$operation"
+
+    install_logo
 
     # OpenRC hosts run the provider as a system service under the service
     # user (default 'urnet'). When root installs with the DEFAULT install

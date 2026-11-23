@@ -348,6 +348,14 @@ The terminal payload stops at 64 KiB of text, cut between lines, because many te
 
 A copy is a snapshot. It does not change the frame, the selected page, or the terminal's mouse mode.
 
+## The logo
+
+The URnetwork wordmark and icon are drawn as terminal block art in a few places: `urnet-tools --version`, the root help page (bare `urnet-tools` and `--help`), the help page of every subcommand, the full `status` view (the default view and `--detail`), and the welcome of the Linux installer.
+
+The logo is decoration. It never prints when stdout is not a terminal, and never with `--plain`, `--json`, `--json-summary` or `--brief`. Output that is read by a script stays byte for byte what it was. A terminal narrower than the artwork gets nothing, so a narrow window keeps its space for real output.
+
+Turn it off for one run with `--no-logo`, or for every run in a shell with `URNET_NO_LOGO=1`. Set `ui.logo = off` in `~/.config/urnet-tools/top.conf` to keep it off until the setting changes; the default is on. The installer welcomes an interactive install only: an unattended run (`-y`), a piped stdout and a terminal narrower than 82 columns print what they printed before.
+
 ## Docker top
 
 `urnet-docker top [container]` opens the dashboard in the selected running container. It needs an interactive terminal and an image that includes the Go dashboard. The image keeps the existing shell tool for other Docker commands. Update and recreate an older image if the dashboard executable is missing.

@@ -48,7 +48,7 @@ func withHelpFlags(cmd *cobra.Command, long, example string, flags ...helpFlag) 
 
 // perCommandHelpTemplate is cobra's default per-command page with a blank line
 // between the description and the usage.
-const perCommandHelpTemplate = `{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
+const perCommandHelpTemplate = `{{with (or .Long .Short)}}{{logoParagraph . | trimTrailingWhitespaces}}
 
 {{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`
 
