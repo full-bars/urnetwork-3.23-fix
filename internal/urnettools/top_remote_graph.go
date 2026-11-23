@@ -577,13 +577,23 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int)
 		scale = 1
 	}
 	maxH := float64(cv.rows*4 - 1)
-	prev := -1
+	prev, prevH := -1, 0
 	for x := 0; x < cv.cells*2; x++ {
 		frac := max(0, remoteCurveAt(pts, float64(x))) / scale
 		// A curve drawn while an ease is still under it can exceed its half;
 		// clamping the fraction keeps the conversion to an int well defined.
 		h := int(math.Round(min(frac, 1) * maxH))
 		h = min(max(h, 0), cv.rows*4-1)
+		// A zero lies on the center line, which the chart draws already, as
+		// in the client app. Only the foot of a rise or a fall touches the
+		// row beside it.
+		if h == 0 && (prev < 0 || prevH == 0) {
+			prev, prevH = 0, 0
+			if up {
+				prev = cv.rows*4 - 1
+			}
+			continue
+		}
 		var y, base int
 		if up {
 			base, y = cv.rows*4-1, cv.rows*4-1-h
@@ -610,7 +620,7 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int)
 		for yy := a; yy <= z; yy++ {
 			cv.setCurve(x, yy, idx)
 		}
-		prev = y
+		prev, prevH = y, h
 	}
 }
 
