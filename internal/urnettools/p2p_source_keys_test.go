@@ -59,7 +59,13 @@ func TestP2PSourceKeysKeepOffAsAValue(t *testing.T) {
 		// and reply, then the get that reads the value back.
 		for _, value := range tc.values {
 			t.Run(tc.key+"="+value, func(t *testing.T) {
-				dir := t.TempDir()
+				// A short directory: a Windows socket path is limited to 108
+				// characters and the subtest name alone is long.
+				dir, err := os.MkdirTemp("", "p2pk")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.RemoveAll(dir) })
 				server := startMockControlServer(t, filepath.Join(dir, "provider.sock"))
 				defer server.Close()
 				p := Provider{StateDir: dir}
