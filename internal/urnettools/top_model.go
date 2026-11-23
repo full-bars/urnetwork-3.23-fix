@@ -282,9 +282,12 @@ type topModel struct {
 	themeLocked  bool
 	savedTheme   string
 	settingsPath string
-	menu         bool
-	menuSel      int
-	menuNote     string
+	// logoSetting is the ui.logo value read from the settings file. top does
+	// not change it, but a save rewrites the whole file, so it is written back.
+	logoSetting *bool
+	menu        bool
+	menuSel     int
+	menuNote    string
 
 	// mouse is on in Mouse Mode, where the terminal reports clicks and hover to
 	// top, and off in Keyboard Mode, where the terminal keeps them so its own

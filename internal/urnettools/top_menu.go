@@ -39,6 +39,7 @@ func (m *topModel) applySettings(s topSettings) {
 		m.winLevel = level
 	}
 	m.layout = topLayout{SideWidth: s.LayoutSideWidth, Dividers: s.LayoutDividers}
+	m.logoSetting = s.Logo
 }
 
 func (m *topModel) settings() topSettings {
@@ -46,7 +47,7 @@ func (m *topModel) settings() topSettings {
 	if m.themeLocked {
 		theme = m.savedTheme
 	}
-	return topSettings{Theme: theme, Graph: m.graph.String(), GraphWindow: topGraphWindowNames[m.winLevel], ProxyAfterglowSeconds: m.proxyAfterglowSeconds, ProxyHeatmapStyle: m.proxyHeatmapStyle, LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
+	return topSettings{Theme: theme, Graph: m.graph.String(), GraphWindow: topGraphWindowNames[m.winLevel], ProxyAfterglowSeconds: m.proxyAfterglowSeconds, ProxyHeatmapStyle: m.proxyHeatmapStyle, LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers, Logo: m.logoSetting}
 }
 
 // saveSettings writes the choice just made, so the next run starts on the same
