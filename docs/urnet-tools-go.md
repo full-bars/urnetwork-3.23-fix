@@ -35,7 +35,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `hotswap` (`hot-swap`) | Zero-downtime in-process binary reload: hands live service to a verified candidate with no restart. Requires a `Type=notify` unit; see the deep-dive below. |
 | `self-update` (`selfupdate`) | Update the tool binary itself without touching running providers. |
 | `logs [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. The ramlog and file views use a native follower, so they work on Windows (no `tail` needed) and wherever `tail` is missing. It prints the last N lines and then follows. If the log is rotated or replaced it finishes the old file and follows the new one from its start, and a truncated log is followed from its start. |
-| `top [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool, memory and recent events. Read-only. Press `?` for keys, `q` to quit. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`). Press `+` or `-` to change the refresh interval down to 100 ms. At one second or faster, each live traffic reading adds a graph column. The title shows the duration of the visible columns; changing the interval keeps earlier columns. Longer intervals use one-second slots. The `1h` and `24h` views use binned snapshot history. Press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Press `]` or `[` (or `PageDown`, `PageUp`, or a digit) to move between pages of graphs. Drag panel dividers to resize them; `K` switches between mouse mode and keyboard mode, and `--no-mouse` starts in keyboard mode. Press `c` to copy the screen to the clipboard while it runs. |
+| `top [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool, memory and recent events. Read-only. Press `?` for keys, `q` to quit. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`). Press `+` or `-` to change the refresh interval down to 100 ms. Every traffic reading goes on one time axis, and the graphs show a fixed time scale of 10s, 1m, 5m or 15m. Press `w` for the next scale and `W` for the previous one, and the footer names the scale on screen. Changing the interval keeps the readings already collected. Longer intervals use one-second slots. The `1h` and `24h` views use binned snapshot history. Press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Press `]` or `[` (or `PageDown`, `PageUp`, or a digit) to move between pages of graphs. Drag panel dividers to resize them; `K` switches between mouse mode and keyboard mode, and `--no-mouse` starts in keyboard mode. Press `c` to copy the screen to the clipboard while it runs. |
 | `extender [status|events|about|on|off|enable|disable|setup]` | Manage the extender role: `status` shows ports and relayed traffic; `events` reads recent gossip events (`--since`, `--kind`, `--json`); `about` explains ports and requirements; `setup` configures low-port bind privilege and firewall rules; `on`/`off` controls the role live without restart. |
 | `get [key] [target]` (alias `show`) | Read-only view of the runtime overrides. With no key it lists every active override; pass one key to see its value. Use `set` to change anything. |
 | `version` (`--version`, `-v`) | Print stamped binary version and build metadata. |
@@ -177,6 +177,39 @@ Press `]` or `[` to move to the next or previous page, or `PageDown` and `PageUp
 Page 1 keeps the dashboard's layout, and the rest of the frame is shared, so only the page's own draw function changes when you move to another page. A page with no data, such as Remote before the provider has answered, is left out of the strip unless it is the page you are on, which then shows its own waiting message.
 
 The strip needs the full layout, which is 72 columns by 20 rows. Below that `top` draws the compact single panel, which has no tabs and keeps every row for its graph.
+
+## Graph time scales
+
+The throughput graphs draw one fixed, round time span and fill the plot with it from the left edge to the right edge, whatever the terminal width and the refresh speed. Four scales are available:
+
+| Scale | Span |
+|---|---|
+| `10s` | 10 seconds |
+| `1m` | 1 minute |
+| `5m` | 5 minutes |
+| `15m` | 15 minutes |
+
+`1m` is the default. Press `w` to step to the next scale and `W` to step back, and both wrap around the table. The footer names the scale (`w zoom 1m`). Clicking the footer hint or the graph title steps to the next scale. The choice is saved in `top.conf` as `graph.window`, and a missing or unknown value falls back to the default, so an older file keeps working.
+
+The graphs keep the readings of the longest scale, one reading per traffic poll, which is 9000 readings at the 100 ms refresh and more than enough at the slower ones. When a scale holds more readings than the plot has columns, each column shows the highest reading in it, so a spike stays visible. When it holds fewer, each reading covers its own share of the columns, so the plot is a set of step bars and no reading is smoothed away.
+
+More columns than readings is the common case at the slower refresh speeds and the shorter scales. A scale whose readings do not reach the left edge yet says so in the title, for example `Billable, 15m (collecting 40s)`, and the data grows in from the right. The title switches to `Billable, 15m` when the readings cover the whole span.
+
+The Remote chart and the direction pages use the same scale. They read the one-second history, which holds about ten minutes, so the 15 minute scale is drawn there as the ten minutes the history carries.
+
+## Peak rates in the Now panel
+
+The Now panel keeps the highest rates `top` has seen since it started, for billable and for total traffic. Three rows appear under `moved` when the panel has the room for them:
+
+```
+peak/s    live    1m      5m
+bill      1.9M    41.0M   35.7M
+total     3.8M    82.0M   71.3M
+```
+
+`live` is the highest rate of a single traffic reading, in bytes per second. `1m` and `5m` are the highest of the provider's one and five minute averages. A one or five minute peak is recorded only once its window is full, 60 seconds and 300 seconds after `top` started, so a partial window early after start cannot set it. Until then the cell shows a dash. A peak never comes down.
+
+The block shows one number and one unit letter per cell, so three rates fit the narrow panel. The number follows the chosen unit base, so `u` switches it with the rows above. It is left out when the panel has no rows to spare, and nothing about it is stored: a new `top` starts with no peaks.
 
 ## Billable and total by direction
 

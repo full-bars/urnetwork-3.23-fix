@@ -102,7 +102,7 @@ func (m *topModel) drawRemote(b *tui.Buffer) {
 		Now:      m.now(),
 		Newest:   newest,
 		Interval: interval,
-		Window:   remoteDefaultWindow,
+		Window:   m.remoteWindow(),
 		Scales:   m.remoteScales,
 		ASCII:    th.ASCII,
 		Dim:      th.Dim,

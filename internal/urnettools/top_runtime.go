@@ -15,8 +15,6 @@ import (
 // is fed by the run loop and drawn from the model alone, like the rest.
 
 const (
-	// topZoomWindow is the duration shown by the zoom graph.
-	topZoomWindow = 15 * time.Second
 	// topZoomSpan is the span each zoom column's rate is taken over. Two or
 	// three polls at 100ms: motion on every poll without counter-granularity
 	// noise.
@@ -149,58 +147,6 @@ func (h *topTrafficHistory) pushColumn(at int64, span time.Duration, b, t float6
 		h.total = h.total[len(h.total)-keep:]
 		h.spans = h.spans[len(h.spans)-keep:]
 	}
-}
-
-// topZoom stores rates with the provider time of each accepted poll.
-type topZoom struct {
-	billable, total []float64
-	at              []int64
-	spans           []time.Duration
-	seq             int64
-}
-
-func (z *topZoom) reset() { *z = topZoom{} }
-
-func (z *topZoom) push(at int64, b, t float64) {
-	z.billable = append(z.billable, b)
-	z.total = append(z.total, t)
-	span := time.Second
-	if len(z.at) > 0 {
-		span = time.Duration(at - z.at[len(z.at)-1])
-	}
-	z.at = append(z.at, at)
-	z.spans = append(z.spans, span)
-	z.seq++
-	cut := at - int64(topZoomWindow)
-	n := 0
-	for n < len(z.at) && z.at[n] <= cut {
-		n++
-	}
-	z.at, z.billable, z.total, z.spans = z.at[n:], z.billable[n:], z.total[n:], z.spans[n:]
-}
-
-// grid places readings on a fixed time axis. Empty slots remain unknown.
-func (z *topZoom) grid() (billable, total []float64, anchor int64) {
-	if len(z.at) == 0 {
-		return nil, nil, 0
-	}
-	const capacity = int(topZoomWindow / topMinInterval)
-	anchor = z.at[len(z.at)-1] / int64(topMinInterval)
-	billable, total = make([]float64, capacity), make([]float64, capacity)
-	for i := range billable {
-		billable[i], total[i] = math.NaN(), math.NaN()
-	}
-	for i, at := range z.at {
-		idx := int(at/int64(topMinInterval) - anchor + int64(capacity) - 1)
-		if idx >= 0 && idx < capacity {
-			billable[idx], total[idx] = z.billable[i], z.total[i]
-		}
-	}
-	return billable, total, anchor
-}
-
-func (m *topModel) zoomCapacity() int {
-	return int(topZoomWindow / topMinInterval)
 }
 
 // topRuntime is what the Internals panel shows and how it is fed.

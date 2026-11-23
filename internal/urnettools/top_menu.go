@@ -35,6 +35,9 @@ func (m *topModel) applySettings(s topSettings) {
 	}
 	m.proxyAfterglowSeconds = s.ProxyAfterglowSeconds
 	m.proxyHeatmapStyle = s.ProxyHeatmapStyle
+	if level, ok := topGraphWindowIndex(s.GraphWindow); ok {
+		m.winLevel = level
+	}
 	m.layout = topLayout{SideWidth: s.LayoutSideWidth, Dividers: s.LayoutDividers}
 }
 
@@ -43,7 +46,15 @@ func (m *topModel) settings() topSettings {
 	if m.themeLocked {
 		theme = m.savedTheme
 	}
-	return topSettings{Theme: theme, Graph: m.graph.String(), ProxyAfterglowSeconds: m.proxyAfterglowSeconds, ProxyHeatmapStyle: m.proxyHeatmapStyle, LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
+	return topSettings{Theme: theme, Graph: m.graph.String(), GraphWindow: topGraphWindowNames[m.winLevel], ProxyAfterglowSeconds: m.proxyAfterglowSeconds, ProxyHeatmapStyle: m.proxyHeatmapStyle, LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
+}
+
+// saveSettings writes the choice just made, so the next run starts on the same
+// graph window. A failure is reported on the footer row, never a stop.
+func (m *topModel) saveSettings() {
+	if err := saveTopSettings(m.settingsPath, m.settings()); err != nil {
+		m.setNotice("could not save: " + err.Error())
+	}
 }
 
 // menuHandle applies one input event while the menu is open. It reports whether

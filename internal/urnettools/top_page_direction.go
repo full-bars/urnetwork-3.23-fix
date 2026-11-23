@@ -101,7 +101,7 @@ func (m *topModel) drawDirectionPage(b *tui.Buffer, content tui.Rect, id, title 
 		Now:      m.now(),
 		Newest:   newest,
 		Interval: interval,
-		Window:   remoteDefaultWindow,
+		Window:   m.remoteWindow(),
 		Scales:   m.directionScales,
 		ASCII:    th.ASCII,
 		Dim:      th.Dim,
