@@ -495,14 +495,25 @@ install_logo ()
 URNETWORK_WORDMARK
 }
 
+# install_logo_tty_size prints the terminal's "rows columns" from the
+# controlling terminal, or fails when there is none. A function of its own so
+# the test suite can stand in for the terminal.
+install_logo_tty_size ()
+{
+    stty size < /dev/tty 2>/dev/null
+}
+
 # install_logo_columns reports the terminal width. COLUMNS is what an
 # interactive shell already holds, and stty covers the case where it is not
 # exported. Anything unreadable reports 0, which prints no artwork.
 install_logo_columns ()
 {
     logo_cols="${COLUMNS:-}"
-    if [ -z "$logo_cols" ] && [ -t 1 ]; then
-        logo_size="$(stty size < /dev/tty 2>/dev/null)" || logo_size=""
+    if [ -z "$logo_cols" ]; then
+        # No stdout test here: this runs inside a command substitution, where
+        # stdout is a pipe. install_logo has already checked its own stdout, and
+        # the terminal itself answers the size query.
+        logo_size="$(install_logo_tty_size)" || logo_size=""
         logo_cols="${logo_size#* }"
     fi
     case "$logo_cols" in
