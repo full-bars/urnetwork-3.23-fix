@@ -28,6 +28,9 @@ import (
 const (
 	// remoteScaleEase is how long a scale takes to reach a new window peak.
 	remoteScaleEase = 500 * time.Millisecond
+	// remoteScaleShrink is how far the window peak must fall below the scale
+	// before the scale follows it down.
+	remoteScaleShrink = 0.15
 	// remoteAverageBuckets is how many of the newest samples the corner
 	// average covers.
 	remoteAverageBuckets = 5
@@ -80,8 +83,13 @@ type remoteChart struct {
 	ASCII  bool
 	// dots is the plot width in braille dot columns, set by drawRemoteChart.
 	dots int
-	Dim  tui.Style // center line, legends and the peak labels
-	Text tui.Style // the direction arrows when a direction is active
+	// plotNow is Now moved back to a whole dot column of the window, set by
+	// drawRemoteChart. Every sample then lands a whole number of columns from
+	// where it was a frame ago, so the curve scrolls without being sampled at
+	// a new phase and reshaping. It is zero when the chart is built by hand.
+	plotNow time.Time
+	Dim     tui.Style // center line, legends and the peak labels
+	Text    tui.Style // the direction arrows when a direction is active
 }
 
 // remoteScale eases the height the plot scales to. A new window peak starts a
@@ -102,7 +110,12 @@ func (s *remoteScale) target(peak float64, now time.Time) {
 		s.from, s.to, s.start, s.set = peak, peak, now, true
 		return
 	}
-	if peak == s.to {
+	// A higher peak is taken at once, so the curve never runs off the plot. A
+	// lower one is taken only when it fell by more than remoteScaleShrink.
+	// The drawn peak moves by a fraction of a percent on most frames, and a
+	// new ease for each of those nudges every dot of the plot up or down a
+	// little, which reads as the whole curve shimmering.
+	if peak == s.to || (peak < s.to && peak >= s.to*(1-remoteScaleShrink)) {
 		return
 	}
 	s.from, s.to, s.start = s.valueAt(now), peak, now
@@ -195,6 +208,7 @@ func drawRemoteChart(b *tui.Buffer, c remoteChart) {
 		c.Interval = time.Second
 	}
 	c.dots = 2 * w
+	c.plotNow = remoteDotClock(c.Now, c.Window, c.dots)
 	scales := remoteScales(c)
 	l := remoteLayout(w, h)
 
@@ -273,12 +287,16 @@ func remoteScales(c remoteChart) map[string]float64 {
 			}
 			peak := remoteWindowPeak(c, s.Values)
 			if c.dots > 0 {
-				// The curve draws smoothed bucket averages, so its height
-				// follows the top of the drawn curve. The peak label still
-				// names the highest sample.
+				// The curve is drawn through bucket averages, so its height
+				// follows the highest of those, as the app's follows its
+				// highest sample. It is taken before the curve is blurred.
+				// The blurred top of a sample that has just arrived is
+				// wider than it is one reading later, and a scale that
+				// followed it would swing and redraw the whole plot twice.
+				// The peak label still names the highest sample.
 				peak = 0
-				for _, v := range remoteSmoothColumns(remotePointsOf(c, s.Values, c.dots), c.dots) {
-					peak = max(peak, v)
+				for _, p := range remotePointsOf(c, s.Values, c.dots) {
+					peak = max(peak, p.v)
 				}
 			}
 			peak = max(peak, floor)
@@ -691,9 +709,10 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int)
 // are joined with a monotone cubic (Fritsch and Carlson), which passes through
 // every sample, never overshoots past a peak or below zero, and is flat at
 // every local peak and dip, so a burst rounds off at the top and tapers at the
-// foot. A light Gaussian, a quarter of a sample wide, then takes the
-// corners off where a burst meets the baseline. The peak label still names the
-// highest sample.
+// foot. The app draws its curve through the samples as they are, and so does
+// this. A blur on top would lower every peak below the scale, and a scale that
+// followed the blurred top would swing each time a new reading changed the
+// blur at the right edge. The peak label names the highest sample.
 func remoteSmoothColumns(pts []remotePoint, dots int) []float64 {
 	raw := make([]float64, dots)
 	top := 0.0
@@ -703,34 +722,7 @@ func remoteSmoothColumns(pts []remotePoint, dots int) []float64 {
 	for x := range raw {
 		raw[x] = min(max(0, remoteSplineAt(pts, float64(x))), top)
 	}
-	if len(pts) < 2 {
-		return raw
-	}
-	spacing := (pts[len(pts)-1].x - pts[0].x) / float64(len(pts)-1)
-	sigma := spacing
-	if sigma < 0.5 {
-		return raw
-	}
-	reach := int(math.Ceil(2.5 * sigma))
-	weights := make([]float64, 2*reach+1)
-	for k := range weights {
-		d := float64(k - reach)
-		weights[k] = math.Exp(-d * d / (2 * sigma * sigma))
-	}
-	out := make([]float64, dots)
-	for x := range out {
-		sum, wsum := 0.0, 0.0
-		for k, w := range weights {
-			j := x + k - reach
-			if j < 0 || j >= dots {
-				continue
-			}
-			sum += raw[j] * w
-			wsum += w
-		}
-		out[x] = max(sum/wsum, 0)
-	}
-	return out
+	return raw
 }
 
 // remoteSplineAt is the Catmull-Rom spline through pts at dot column x, held
@@ -847,6 +839,33 @@ func (cv *remoteCanvas) draw(b *tui.Buffer, y0 int) {
 	}
 }
 
+// clock is the time the plot scrolls with: the dot aligned clock when
+// drawRemoteChart set one, else Now.
+func (c remoteChart) clock() time.Time {
+	if !c.plotNow.IsZero() {
+		return c.plotNow
+	}
+	return c.Now
+}
+
+// remoteDotClock moves now back to a multiple of one dot column of the window.
+// The app moves its chart by a fraction of a pixel and anti-aliases it, so a
+// sample just slides. A braille dot cannot be anywhere between two columns, so
+// the clock moves one column at a time instead. A sample then keeps its
+// distance from the grid, and the curve through the samples is the same curve
+// shifted left, never sampled at a new phase.
+func remoteDotClock(now time.Time, window time.Duration, dots int) time.Time {
+	if dots < 2 || window <= 0 {
+		return now
+	}
+	step := int64(window) / int64(dots-1)
+	if step < 1 {
+		return now
+	}
+	ns := now.UnixNano()
+	return time.Unix(0, ns-ns%step)
+}
+
 // remotePointsOf places a series on the plot: samples inside the window, padded
 // with zeros back to the window start so the curve ramps in from the baseline,
 // held out to the clock, and bucketed by absolute time when there are more
@@ -870,7 +889,8 @@ func remotePointsIn(c remoteChart, vals []float64, dots, buckets int) []remotePo
 	if dots < 2 || len(vals) == 0 || c.Window <= 0 || c.Interval <= 0 {
 		return nil
 	}
-	windowStart := c.Now.Add(-c.Window)
+	now := c.clock()
+	windowStart := now.Add(-c.Window)
 	var samples []remoteSample
 	for i := len(vals) - 1; i >= 0; i-- {
 		at := c.Newest.Add(-time.Duration(len(vals)-1-i) * c.Interval)
@@ -898,8 +918,8 @@ func remotePointsIn(c remoteChart, vals []float64, dots, buckets int) []remotePo
 		}
 		samples = append(ramp, samples...)
 	}
-	if last := samples[len(samples)-1]; last.at < c.Now.UnixNano() {
-		samples = append(samples, remoteSample{c.Now.UnixNano(), last.v})
+	if last := samples[len(samples)-1]; last.at < now.UnixNano() {
+		samples = append(samples, remoteSample{now.UnixNano(), last.v})
 	}
 	if len(samples) > buckets {
 		samples = remoteBucketize(samples, buckets, c.Window, windowStart.UnixNano())
@@ -907,7 +927,7 @@ func remotePointsIn(c remoteChart, vals []float64, dots, buckets int) []remotePo
 	pts := make([]remotePoint, len(samples))
 	span := float64(c.Window)
 	for i, s := range samples {
-		x := float64(dots-1) * (1 - float64(c.Now.UnixNano()-s.at)/span)
+		x := float64(dots-1) * (1 - float64(now.UnixNano()-s.at)/span)
 		pts[i] = remotePoint{x: min(max(x, 0), float64(dots-1)), v: s.v}
 	}
 	return pts

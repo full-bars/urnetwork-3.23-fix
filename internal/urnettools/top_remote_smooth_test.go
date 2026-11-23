@@ -50,8 +50,9 @@ func longestRun(grid [][]bool, baseRow int) int {
 	return best
 }
 
-// A one-second burst rounds off and tapers like the app's curve. Without
-// smoothing in dot space it is a column of dots hanging from a flat tip.
+// A one-second burst is a narrow peak through its sample, like the app's curve.
+// It is two samples wide at the foot and rounds off at the tip, so it never
+// hangs as a column from a flat tip.
 func TestRemoteSpikeTapers(t *testing.T) {
 	vals := remoteFlat(60, 0)
 	vals[30] = 1 << 20
@@ -61,7 +62,7 @@ func TestRemoteSpikeTapers(t *testing.T) {
 	l := remoteLayout(118, 36)
 	grid := remoteDotGrid(b, l.upY, l.upRows+1, c.Dim)
 	maxH := l.upRows*4 + 1
-	if run := longestRun(grid, maxH); run*3 > maxH {
+	if run := longestRun(grid, maxH); run*2 > maxH {
 		t.Fatalf("the burst hangs as a run of %d dots of a %d dot half:\n%s", run, maxH, b.String())
 	}
 	// The tip still reaches the top rows of the half: the peak is not

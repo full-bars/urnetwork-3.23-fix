@@ -60,8 +60,10 @@ func replayRemote(t *testing.T, replies []LiveTraffic, level, w, h int) (*topMod
 }
 
 // jumpColumns counts the dot columns of the plot where a curve runs straight
-// up or down for more than four dots: the hanging bars a noisy one second
-// series draws when every sample reaches the plot.
+// up or down for more than eight dots, two text rows: the wall of hanging
+// bars a noisy one second series draws when every sample reaches the plot.
+// The curve runs through its samples as the app's does, so a real burst is a
+// steep peak. Only a plot full of them is a wall.
 func jumpColumns(t *testing.T, m *topModel, b *tui.Buffer) int {
 	t.Helper()
 	box := regionRect(t, m, "box:remote")
@@ -79,7 +81,7 @@ func jumpColumns(t *testing.T, m *topModel, b *tui.Buffer) int {
 				run = 0
 			}
 		}
-		if worst > 4 {
+		if worst > 8 {
 			n++
 		}
 	}
@@ -104,7 +106,7 @@ func TestRemoteNoisySeriesIsSmoothAtEveryZoom(t *testing.T) {
 	} {
 		m, b := replayRemote(t, c.replies, c.level, 120, 40)
 		if n := jumpColumns(t, m, b); n > c.bound {
-			t.Errorf("%s: %d dot columns hang in runs of more than four dots, want at most %d:\n%s", c.name, n, c.bound, b.String())
+			t.Errorf("%s: %d dot columns hang in runs of more than eight dots, want at most %d:\n%s", c.name, n, c.bound, b.String())
 		}
 	}
 }

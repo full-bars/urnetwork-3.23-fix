@@ -309,22 +309,29 @@ func TestRemoteWithoutScaleState(t *testing.T) {
 	}
 }
 
-// TestRemoteSlidesOneDotAtATime advances the clock inside one sample and checks
-// the curve moves left: the sub-column scroll comes from the clock, with no
-// second timer and no extra state.
+// TestRemoteSlidesOneDotAtATime advances the clock and checks the curve moves
+// left by whole dot columns only. A braille dot has no position between two
+// columns, so a clock that moves less than one column leaves the frame as it
+// was, and one full column moves the curve by exactly one.
 func TestRemoteSlidesOneDotAtATime(t *testing.T) {
 	up := remoteSpike(60, 30, 100*1024, 0)
 	c := remoteTestChart(up, nil)
-	b := tui.New(40, 10)
-	drawRemoteChart(b, c)
-	first := b.String()
-	c.Now = topBase.Add(250 * time.Millisecond)
-	c.Newest = topBase // the newest sample keeps its time; the clock moves on
-	b2 := tui.New(40, 10)
-	drawRemoteChart(b2, c)
-	second := b2.String()
-	if first == second {
-		t.Fatal("the curve did not move as the clock advanced")
+	c.Newest = topBase
+	step := c.Window / time.Duration(2*40-1)
+	frame := func(now time.Time) string {
+		c.Now = now
+		b := tui.New(40, 10)
+		drawRemoteChart(b, c)
+		return b.String()
+	}
+	// Start at the first instant of a column, so a quarter step stays inside it.
+	start := time.Unix(0, topBase.UnixNano()-topBase.UnixNano()%int64(step))
+	first := frame(start)
+	if got := frame(start.Add(step / 4)); got != first {
+		t.Fatal("the curve moved for a clock change smaller than one dot column")
+	}
+	if got := frame(start.Add(step)); got == first {
+		t.Fatal("the curve did not move after the clock advanced one dot column")
 	}
 }
 
