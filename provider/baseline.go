@@ -204,9 +204,14 @@ type baselineTransport struct {
 	// the all-transports H1.
 	H1       baselineTransportMode  `json:"h1"`
 	H1Direct *baselineTransportMode `json:"h1_direct,omitempty"`
-	H3       *baselineH3            `json:"h3,omitempty"`
-	Dns      *baselinePt            `json:"dns,omitempty"`
-	DnsPump  *baselinePt            `json:"dns_pump,omitempty"`
+	// H1WebSocket and H1Plus split the H1 total by carrier. Both are absent
+	// until H1+ has carried traffic, so a box running plain websockets writes
+	// the sample it always did.
+	H1WebSocket *baselineTransportMode `json:"h1_websocket,omitempty"`
+	H1Plus      *baselineTransportMode `json:"h1_plus,omitempty"`
+	H3          *baselineH3            `json:"h3,omitempty"`
+	Dns         *baselinePt            `json:"dns,omitempty"`
+	DnsPump     *baselinePt            `json:"dns_pump,omitempty"`
 }
 
 type baselineContracts struct {
@@ -949,6 +954,22 @@ func buildBaselineTransport(modes connect.TransportModeStatsSnapshot, datagram c
 	}
 	out.Dns = baselinePtFrom(modes.Dns)
 	out.DnsPump = baselinePtFrom(modes.DnsPump)
+	// The carrier split is written only once H1+ has carried something, so an
+	// H1+-off box keeps the sample shape it always had.
+	if modes.H1PlusFramesTx|modes.H1PlusFramesRx|modes.H1PlusBytesTx|modes.H1PlusBytesRx != 0 {
+		out.H1WebSocket = &baselineTransportMode{
+			FramesTx: modes.H1WebSocketFramesTx,
+			FramesRx: modes.H1WebSocketFramesRx,
+			BytesTx:  modes.H1WebSocketBytesTx,
+			BytesRx:  modes.H1WebSocketBytesRx,
+		}
+		out.H1Plus = &baselineTransportMode{
+			FramesTx: modes.H1PlusFramesTx,
+			FramesRx: modes.H1PlusFramesRx,
+			BytesTx:  modes.H1PlusBytesTx,
+			BytesRx:  modes.H1PlusBytesRx,
+		}
+	}
 	if modes.H3Attempts == 0 {
 		return out
 	}

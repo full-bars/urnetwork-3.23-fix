@@ -16,7 +16,7 @@ func TestTopGraphRefreshColumns(t *testing.T) {
 				m.applyTraffic(m.gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i) * 1000, TotalBytes: uint64(i) * 2000}, nil)
 			}
 			before := len(m.trafficHistory.billable)
-			zoom := len(m.zoom.billable)
+			zoom := len(m.winRing.at)
 			for i := 0; i < 10; i++ {
 				clock.Advance(interval)
 				m.applyTraffic(m.gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i+2) * 1000, TotalBytes: uint64(i+2) * 2000}, nil)
@@ -25,14 +25,14 @@ func TestTopGraphRefreshColumns(t *testing.T) {
 			if got := len(m.trafficHistory.billable) - before; got != 10 {
 				t.Fatalf("traffic added %d columns", got)
 			}
-			if got := len(m.zoom.billable) - zoom; got != 10 {
-				t.Fatalf("zoom added %d columns", got)
+			if got := len(m.winRing.at) - zoom; got != 10 {
+				t.Fatalf("the graph window added %d readings", got)
 			}
 			if got := len(m.rt.gor); got != 10 {
 				t.Fatalf("goroutine trend added %d columns", got)
 			}
 			sr := m.series()
-			if !sr.columns || len(sr.billable) != len(sr.total) {
+			if !sr.window || len(sr.billable) != len(sr.total) {
 				t.Fatal("traffic series is not paired columns")
 			}
 		})
@@ -58,15 +58,17 @@ func TestTopGraphRefreshSpansAndLabels(t *testing.T) {
 	if h.spans[len(h.spans)-1] != time.Second {
 		t.Fatal("new span is not one second")
 	}
-	sr := topSeries{columns: true, spans: []time.Duration{100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond}, billable: make([]float64, 10)}
-	if title := m.graphTitle("Billable", sr, sr.billable, nil, 80); title != "Billable, 1s" {
-		t.Fatalf("fast title %q", title)
+	// The window ring keeps the same spans the traffic history kept, so a level
+	// change with - and + does not rewrite the time axis of what is already
+	// drawn.
+	r := &m.winRing
+	if len(r.spans) == 0 || r.spans[len(r.spans)-1] != time.Second {
+		t.Fatalf("the graph window's newest span is %v, want the one second reading", r.spans)
 	}
-	for i := range sr.spans {
-		sr.spans[i] = time.Second
-	}
-	if title := m.graphTitle("Billable", sr, sr.billable, nil, 80); title != "Billable, 10s" {
-		t.Fatalf("one second title %q", title)
+	for i := 1; i < len(r.spans)-1; i++ {
+		if r.spans[i] > time.Second {
+			t.Fatalf("reading %d spans %v after the interval change", i, r.spans[i])
+		}
 	}
 }
 
@@ -78,12 +80,12 @@ func TestTopGraphRefreshScaleSmoothsSingleSpike(t *testing.T) {
 		bytes += 1000
 		m.applyTraffic(m.gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: bytes, TotalBytes: bytes}, nil)
 	}
-	before := m.zoomScaleB.top
+	before := m.winScaleB[topGraphWindowDefault].top
 	clock.Advance(100 * time.Millisecond)
 	bytes += 1100
 	m.applyTraffic(m.gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: bytes, TotalBytes: bytes}, nil)
-	if m.zoomScaleB.top != before {
-		t.Fatalf("small spike changed scale from %v to %v", before, m.zoomScaleB.top)
+	if m.winScaleB[topGraphWindowDefault].top != before {
+		t.Fatalf("small spike changed scale from %v to %v", before, m.winScaleB[topGraphWindowDefault].top)
 	}
 }
 

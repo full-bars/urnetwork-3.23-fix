@@ -52,19 +52,87 @@ type SnapshotTraffic struct {
 	TotalAvg1mBps         float64   `json:"total_avg_1m_bps"`
 	TotalAvg5mBps         float64   `json:"total_avg_5m_bps"`
 	TotalHistoryBps       []float64 `json:"total_history_bps"` // oldest first, newest last
+	// Directions is the per-direction block, nil from a provider that predates
+	// it. Its presence is the availability signal for the direction pages.
+	Directions *SnapshotTrafficDirections `json:"directions,omitempty"`
+	Packets    *SnapshotTrafficPackets    `json:"packets,omitempty"`
+}
+
+// SnapshotTrafficDirection mirrors one direction's billable or total rate.
+type SnapshotTrafficDirection struct {
+	NowBps     float64   `json:"now_bps"`
+	Avg1mBps   float64   `json:"avg_1m_bps"`
+	Avg5mBps   float64   `json:"avg_5m_bps"`
+	HistoryBps []float64 `json:"history_bps"` // oldest first, newest last
+}
+
+// SnapshotTrafficDirections is the billable versus total split by direction:
+// rx is download (toward the client) and tx is upload (away from the client).
+type SnapshotTrafficDirections struct {
+	BillableRx SnapshotTrafficDirection `json:"billable_rx"`
+	BillableTx SnapshotTrafficDirection `json:"billable_tx"`
+	TotalRx    SnapshotTrafficDirection `json:"total_rx"`
+	TotalTx    SnapshotTrafficDirection `json:"total_tx"`
+}
+
+type SnapshotPacketRate struct {
+	NowPps     float64   `json:"now_pps"`
+	Avg1mPps   float64   `json:"avg_1m_pps"`
+	Avg5mPps   float64   `json:"avg_5m_pps"`
+	HistoryPps []float64 `json:"history_pps"`
+}
+
+type SnapshotTrafficPackets struct {
+	BillableRx SnapshotPacketRate `json:"billable_rx"`
+	BillableTx SnapshotPacketRate `json:"billable_tx"`
 }
 
 // LiveTraffic is the light reply to the "traffic" command: live counter sums
 // and the provider's clock when they were read. top polls it at up to 100ms and
 // derives rates from the deltas. The sums drop when a proxy is removed or
 // respawns, so a decrease is skipped, not read as negative traffic.
+//
+// The four per-direction fields are pointers so that a provider that predates
+// them sends nil, while a new provider sending zeros yields a non-nil pointer
+// to zero. nil = old provider, non-nil = new provider (zero or non-zero).
 type LiveTraffic struct {
 	AtUnixNano    int64  `json:"at_unix_nano"`
 	BillableBytes uint64 `json:"billable_bytes"`
 	TotalBytes    uint64 `json:"total_bytes"`
+
+	Transports *LiveTransports `json:"transports,omitempty"`
+
+	BillableRxBytes   *uint64 `json:"billable_rx_bytes,omitempty"`
+	BillableTxBytes   *uint64 `json:"billable_tx_bytes,omitempty"`
+	TotalRxBytes      *uint64 `json:"total_rx_bytes,omitempty"`
+	TotalTxBytes      *uint64 `json:"total_tx_bytes,omitempty"`
+	BillableRxPackets *uint64 `json:"billable_rx_packets,omitempty"`
+	BillableTxPackets *uint64 `json:"billable_tx_packets,omitempty"`
 }
 
-// errTrafficUnsupported means the provider predates the "traffic" command. top
+// LiveTransport is one transport kind's cumulative counters plus its live
+// connection gauge. The tags match the provider's wire names.
+type LiveTransport struct {
+	BytesTx  uint64 `json:"bytes_tx"`
+	BytesRx  uint64 `json:"bytes_rx"`
+	FramesTx uint64 `json:"frames_tx"`
+	FramesRx uint64 `json:"frames_rx"`
+	Up       int64  `json:"up"`
+}
+
+// LiveTransports is the per-kind transport block of the traffic reply. A kind
+// the provider does not run is absent; h1_websocket and h1_plus are always
+// present so a provider with H1+ off reports zero for it. Window shares are
+// reported in the order h3, h1_websocket, h1_plus, dns, dns_pump.
+type LiveTransports struct {
+	H1WebSocket *LiveTransport `json:"h1_websocket,omitempty"`
+	H1Plus      *LiveTransport `json:"h1_plus,omitempty"`
+	H3          *LiveTransport `json:"h3,omitempty"`
+	DNS         *LiveTransport `json:"dns,omitempty"`
+	DNSPump     *LiveTransport `json:"dns_pump,omitempty"`
+}
+
+// errTrafficUnsupported means the provider predates the \"traffic\" command. top
 // then falls back to the snapshot's own once-a-second rates.
 var errTrafficUnsupported = errors.New("provider does not answer the traffic command")
 

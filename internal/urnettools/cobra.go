@@ -19,7 +19,7 @@ import (
 // relaying every command the Go/Cobra build exposes. Per-command help is
 // unaffected (each subcommand keeps its own Cobra help page on -h/--help).
 // The support footer matches the legacy tool the user liked.
-const rootHelpMenu = `urnet-tools — provider-aware URnetwork manager
+const rootHelpMenu = `{{logoTitle "urnet-tools — provider-aware URnetwork manager"}}
 
 Usage:
   urnet-tools [command]
@@ -132,9 +132,13 @@ func buildRootCmd() *cobra.Command {
 	// WITHOUT touching per-command help: the root's own Run and Help print the
 	// menu; every subcommand keeps Cobra's default per-command -h/--help page.
 	// Using SetHelpTemplate here would CASCADE to subcommands and break their
-	// per-command help pages, so instead we bind the menu to the root only.
+	// own pages, so instead the menu is bound to the root only. The menu is a
+	// template because its title line carries the logo; Run and -h both render
+	// it, so bare `urnet-tools` and `urnet-tools --help` cannot drift apart.
 	rootCmd.Run = func(cmd *cobra.Command, args []string) {
-		fmt.Fprint(cmd.OutOrStderr(), rootHelpMenu)
+		if err := cmd.Help(); err != nil {
+			fmt.Fprint(cmd.OutOrStderr(), rootHelpMenu)
+		}
 	}
 	// Root -h/--help renders the same curated menu. Subcommands reset their own
 	// help template so they keep Cobra's per-command page (see newCobraCmd).
@@ -152,6 +156,7 @@ func buildRootCmd() *cobra.Command {
 	rootCmd.PersistentFlags().String("pid", "", "target the provider with this process `id`")
 	rootCmd.PersistentFlags().BoolP("force", "f", false, "skip the confirmation prompt (also -y, --yes)")
 	rootCmd.PersistentFlags().BoolP("dry-run", "n", false, "print what would happen, change nothing")
+	rootCmd.PersistentFlags().Bool("no-logo", false, "hide the URnetwork logo (also `URNET_NO_LOGO=1`)")
 	rootCmd.PersistentFlags().SortFlags = false
 
 	rootCmd.AddCommand(
@@ -301,6 +306,7 @@ Keys:
 		helpFlag{name: "no-mouse", usage: "turn off mouse support"},
 		helpFlag{name: "copy", usage: "on quit, save the last screen as a text file"},
 		helpFlag{name: "plain", usage: "with --copy, use ASCII instead of box characters"},
+		helpFlag{name: "theme", value: true, usage: "color theme; saved for next time"},
 	)
 }
 

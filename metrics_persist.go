@@ -97,12 +97,17 @@ type datagramCounters struct {
 }
 
 type metricsCounterTotals struct {
-	H1         modeCounters     `json:"h1"`
-	H1Direct   modeCounters     `json:"h1_direct"`
-	H3         modeCounters     `json:"h3"`
-	H3Dns      modeCounters     `json:"h3_dns"`
-	H3DnsPump  modeCounters     `json:"h3_dns_pump"`
-	H3Datagram datagramCounters `json:"h3_datagram"`
+	H1 modeCounters `json:"h1"`
+	// H1WebSocket and H1Plus are the carrier split of H1. A store written
+	// before this build has H1 alone: the halves cannot be recovered, so the
+	// stored total is raised into the websocket bucket.
+	H1WebSocket modeCounters     `json:"h1_websocket"`
+	H1Plus      modeCounters     `json:"h1_plus"`
+	H1Direct    modeCounters     `json:"h1_direct"`
+	H3          modeCounters     `json:"h3"`
+	H3Dns       modeCounters     `json:"h3_dns"`
+	H3DnsPump   modeCounters     `json:"h3_dns_pump"`
+	H3Datagram  datagramCounters `json:"h3_datagram"`
 
 	Errors            map[string]uint64 `json:"errors,omitempty"`
 	ContractsAcquired uint64            `json:"contracts_acquired"`
@@ -248,7 +253,7 @@ func CatchUpMetricsCounters() error {
 // value is ahead. The reads and adds are atomic, so a concurrent increment
 // only makes the final value slightly larger, never smaller.
 func catchUpCounterTotals(c metricsCounterTotals) {
-	raiseModeCounters(&h1ModeStats, c.H1)
+	raiseH1Carriers(&h1ModeStats, c.H1, c.H1WebSocket, c.H1Plus)
 	raiseModeCounters(&h1DirectStats, c.H1Direct)
 	raiseH3Family(&h3Counters, c.H3)
 	raiseH3Family(&h3DnsCounters, c.H3Dns)
@@ -271,6 +276,30 @@ func raiseModeCounters(s *transportModeStats, c modeCounters) {
 	raiseU64(&s.framesRx, c.FramesRx)
 	raiseU64(&s.bytesTx, c.BytesTx)
 	raiseU64(&s.bytesRx, c.BytesRx)
+}
+
+// raiseH1Carriers raises the split H1 counters to at least the stored values.
+// A store written before the split has no halves: its H1 total is raised into
+// the websocket bucket, because nothing recorded which carrier carried it. The
+// totals stay consistent with the halves either way, and only the restored
+// part is attributed that way; traffic counted in this process is not.
+func raiseH1Carriers(s *h1CarrierCounters, total, webSocket, h1Plus modeCounters) {
+	if webSocket == (modeCounters{}) && h1Plus == (modeCounters{}) {
+		raiseU64ToSum(&s.webSocket.framesTx, &s.h1Plus.framesTx, total.FramesTx)
+		raiseU64ToSum(&s.webSocket.framesRx, &s.h1Plus.framesRx, total.FramesRx)
+		raiseU64ToSum(&s.webSocket.bytesTx, &s.h1Plus.bytesTx, total.BytesTx)
+		raiseU64ToSum(&s.webSocket.bytesRx, &s.h1Plus.bytesRx, total.BytesRx)
+		return
+	}
+	raiseModeCounters(&s.webSocket, webSocket)
+	raiseModeCounters(&s.h1Plus, h1Plus)
+}
+
+// raiseU64ToSum raises dst until dst+other reaches want, leaving other alone.
+func raiseU64ToSum(dst, other *atomic.Uint64, want uint64) {
+	if current := dst.Load() + other.Load(); current < want {
+		dst.Add(want - current)
+	}
 }
 
 func raiseH3Family(c *h3FamilyCounters, m modeCounters) {
@@ -584,7 +613,7 @@ func raiseSourceTotals(extras map[string]map[string]uint64) {
 // --- seeding the connect-owned counters ---
 
 func seedMetricsCounters(c metricsCounterTotals) {
-	seedModeCounters(&h1ModeStats, c.H1)
+	seedH1Carriers(&h1ModeStats, c.H1, c.H1WebSocket, c.H1Plus)
 	seedModeCounters(&h1DirectStats, c.H1Direct)
 	seedH3Family(&h3Counters, c.H3)
 	seedH3Family(&h3DnsCounters, c.H3Dns)
@@ -604,14 +633,23 @@ func seedMetricsCounters(c metricsCounterTotals) {
 
 func snapshotCounterTotals() metricsCounterTotals {
 	globalProm.initErrors()
+	h1WebSocket := snapshotModeCounters(&h1ModeStats.webSocket)
+	h1Plus := snapshotModeCounters(&h1ModeStats.h1Plus)
+	h1Total := h1WebSocket
+	h1Total.FramesTx += h1Plus.FramesTx
+	h1Total.FramesRx += h1Plus.FramesRx
+	h1Total.BytesTx += h1Plus.BytesTx
+	h1Total.BytesRx += h1Plus.BytesRx
 	totals := metricsCounterTotals{
-		H1:         snapshotModeCounters(&h1ModeStats),
-		H1Direct:   snapshotModeCounters(&h1DirectStats),
-		H3:         snapshotH3Family(&h3Counters),
-		H3Dns:      snapshotH3Family(&h3DnsCounters),
-		H3DnsPump:  snapshotH3Family(&h3DnsPumpCounters),
-		H3Datagram: snapshotDatagramCounters(),
-		Errors:     map[string]uint64{},
+		H1:          h1Total,
+		H1WebSocket: h1WebSocket,
+		H1Plus:      h1Plus,
+		H1Direct:    snapshotModeCounters(&h1DirectStats),
+		H3:          snapshotH3Family(&h3Counters),
+		H3Dns:       snapshotH3Family(&h3DnsCounters),
+		H3DnsPump:   snapshotH3Family(&h3DnsPumpCounters),
+		H3Datagram:  snapshotDatagramCounters(),
+		Errors:      map[string]uint64{},
 	}
 	for cat, c := range globalProm.errorsTotal {
 		totals.Errors[string(cat)] = uint64(max(c.Load(), 0))
@@ -639,6 +677,19 @@ func seedModeCounters(s *transportModeStats, c modeCounters) {
 	s.framesRx.Add(c.FramesRx)
 	s.bytesTx.Add(c.BytesTx)
 	s.bytesRx.Add(c.BytesRx)
+}
+
+// seedH1Carriers adds the stored H1 counters into the split. A store written
+// before the split has no halves, so its total goes into the websocket bucket:
+// nothing recorded which carrier carried it, and leaving it out would make the
+// H1 total step backwards across the restart.
+func seedH1Carriers(s *h1CarrierCounters, total, webSocket, h1Plus modeCounters) {
+	if webSocket == (modeCounters{}) && h1Plus == (modeCounters{}) {
+		seedModeCounters(&s.webSocket, total)
+		return
+	}
+	seedModeCounters(&s.webSocket, webSocket)
+	seedModeCounters(&s.h1Plus, h1Plus)
 }
 
 func snapshotH3Family(c *h3FamilyCounters) modeCounters {

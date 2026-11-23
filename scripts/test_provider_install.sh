@@ -1151,6 +1151,33 @@ test_sanitize_restart_dropins_sigpipe() {
 }
 test_sanitize_restart_dropins_sigpipe
 
+# --- TEST: the welcome wordmark rules ---
+# install_logo_columns turns the terminal width into a number, and the artwork
+# is only drawn for a terminal wide enough to hold it.
+test_install_logo_columns() {
+    assert_eq "120" "$(COLUMNS=120 install_logo_columns)" "a wide terminal reports its width"
+    assert_eq "82" "$(COLUMNS=82 install_logo_columns)" "the narrowest accepted width is reported"
+    assert_eq "0" "$(COLUMNS=wide install_logo_columns)" "a non-numeric width reports 0"
+
+    # This suite runs without a terminal on stdout, so the artwork stays off
+    # whatever the width says.
+    local out
+    out="$(COLUMNS=200 install_logo)"
+    assert_eq "" "$out" "no artwork when stdout is not a terminal"
+
+    # The artwork itself: six rows, none wider than the narrowest terminal it
+    # is offered to.
+    local widest=0 line rows
+    rows="$(mktemp)"
+    sed -n "/^install_logo ()$/,/^URNETWORK_WORDMARK$/p" scripts/Provider_Install_Linux.sh | sed -n '8,13p' > "$rows"
+    while IFS= read -r line; do
+        [ "${#line}" -gt "$widest" ] && widest="${#line}"
+    done < "$rows"
+    rm -f "$rows"
+    assert_eq "1" "$([ "$widest" -ge 74 ] && [ "$widest" -le 80 ] && printf 1 || printf 0)" "the embedded wordmark is six rows of at most 80 columns"
+}
+test_install_logo_columns
+
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
     echo "🎉 All tests passed!"

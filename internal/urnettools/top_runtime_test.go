@@ -134,7 +134,7 @@ func TestTopLiveRecentNeedsASpan(t *testing.T) {
 	}
 }
 
-// --- zoom ------------------------------------------------------------------
+// --- the graph window ------------------------------------------------------
 
 // feed applies n traffic readings 100ms apart at the given byte rate.
 func feedTraffic(t *testing.T, m *topModel, clock *fakeClock, n int, bytesPerStep uint64, start *int64, bytes *uint64) {
@@ -151,166 +151,76 @@ func feedTraffic(t *testing.T, m *topModel, clock *fakeClock, n int, bytesPerSte
 	}
 }
 
-func TestTopZoomFillsAtThePollRateAndStopsAtTheWindow(t *testing.T) {
+func TestTopGraphWindowReadsTheLiveCounters(t *testing.T) {
 	m, clock := liveModel(t, 100*time.Millisecond)
 	var at int64 = 1_000_000_000_000
 	var bytes uint64
-	if got := m.zoomCapacity(); got != 150 {
-		t.Fatalf("capacity at 100ms = %d, want 150 (15s)", got)
+	feedTraffic(t, m, clock, 60, 1_000_000, &at, &bytes) // six seconds at 10 MB/s
+	// The ring starts from the provider's own history, so the short levels are
+	// already full while the longest one is still filling.
+	sr := m.series()
+	if !sr.window || !sr.full || topGraphWindowNames[sr.level] != "1m" {
+		t.Fatalf("window %v level %q full %v", sr.window, topGraphWindowNames[sr.level], sr.full)
 	}
-	feedTraffic(t, m, clock, 200, 1_000_000, &at, &bytes) // 10 MB/s
-	if n := len(m.zoom.billable); n != 150 {
-		t.Fatalf("ring holds %d columns, want it capped at 150", n)
+	if sr.anchor != at {
+		t.Fatalf("the series ends at %d, want the newest reading %d", sr.anchor, at)
 	}
-	if m.zoom.seq != 199 { // the first reading has no span yet
-		t.Fatalf("seq = %d, want 199 columns ever pushed", m.zoom.seq)
+	m.winLevel = len(topGraphWindows) - 1
+	if sr = m.series(); sr.full || sr.covered < 9*time.Minute {
+		t.Fatalf("the longest level claims to be full at %v", sr.covered)
 	}
-	last := m.zoom.billable[len(m.zoom.billable)-1]
-	if math.Abs(last-10e6) > 1 {
-		t.Fatalf("newest column = %v, want 10 MB/s", last)
+	m.winLevel = topGraphWindowDefault
+	if n := len(m.winRing.at); n <= len(m.winRing.at)-1 || n == 0 {
+		t.Fatal("the ring holds no readings")
 	}
-	if tot := m.zoom.total[len(m.zoom.total)-1]; math.Abs(tot-20e6) > 1 {
-		t.Fatalf("total column = %v, want 20 MB/s", tot)
-	}
-}
-
-func TestTopZoomCapacityFollowsTheInterval(t *testing.T) {
-	m, _ := liveModel(t, time.Second)
-	for _, interval := range topIntervalSteps {
-		m.interval = interval
-		if got := m.zoomCapacity(); got != 150 {
-			t.Fatalf("capacity at %v = %d, want 150", interval, got)
-		}
+	if last := sr.billable[len(sr.billable)-1]; math.Abs(last-1e7) > 1e5 {
+		t.Fatalf("newest reading = %v, want about 10 MB/s", last)
 	}
 }
 
-func TestTopZoomRestartsWhenItsTimeBaseWouldBreak(t *testing.T) {
-	setup := func() (*topModel, *fakeClock) {
-		m, clock := liveModel(t, 100*time.Millisecond)
-		var at int64 = 1_000_000_000_000
-		var bytes uint64
-		feedTraffic(t, m, clock, 20, 1_000_000, &at, &bytes)
-		if len(m.zoom.billable) == 0 {
-			t.Fatal("zoom ring empty after feeding")
-		}
-		return m, clock
-	}
-	t.Run("rate change", func(t *testing.T) {
-		m, _ := setup()
-		before := len(m.zoom.billable)
-		pressKey(m, '+')
-		if len(m.zoom.billable) != before {
-			t.Fatal("changing the poll period must preserve history")
-		}
-	})
-	t.Run("connection lost", func(t *testing.T) {
-		m, clock := setup()
-		m.lost(clock.Now(), errors.New("gone"))
-		if len(m.zoom.billable) != 0 {
-			t.Fatal("a window from before the outage would read as current")
-		}
-	})
-	t.Run("provider switch", func(t *testing.T) {
-		m, clock := setup()
-		m.providers = topProviders(2)
-		_ = clock
-		m.selectProvider(1)
-		if len(m.zoom.billable) != 0 || m.zoomScaleB.top != 0 {
-			t.Fatal("history belongs to one provider")
-		}
-	})
-}
-
-func TestTopZoomIgnoresAStalledClockAndCounterResets(t *testing.T) {
+func TestTopGraphWindowKeepsItsHistoryAcrossARateChange(t *testing.T) {
 	m, clock := liveModel(t, 100*time.Millisecond)
 	var at int64 = 1_000_000_000_000
 	var bytes uint64
-	feedTraffic(t, m, clock, 10, 1_000_000, &at, &bytes)
-	seq := m.zoom.seq
-	// The provider clock did not advance: no new column.
+	feedTraffic(t, m, clock, 20, 1_000_000, &at, &bytes)
+	before := len(m.winRing.at)
+	pressKey(m, '+')
+	if len(m.winRing.at) != before {
+		t.Fatal("changing the poll period must preserve the readings")
+	}
+	// A lost provider keeps the readings, so the gap is drawn as a gap rather
+	// than the graph restarting flat.
+	m.lost(clock.Now(), errors.New("gone"))
+	if len(m.winRing.at) != before {
+		t.Fatal("losing the provider threw away the window")
+	}
+	// A reading on a stalled provider clock adds nothing.
 	gen, _, _ := m.wantTraffic(clock.Now().Add(time.Second))
 	m.applyTraffic(gen, &LiveTraffic{AtUnixNano: at, BillableBytes: bytes + 5, TotalBytes: bytes + 5}, nil)
-	if m.zoom.seq != seq {
-		t.Fatal("a reading on a stalled clock added a column")
-	}
-	// A counter that went backwards (a proxy respawned) restarts the window and
-	// never becomes a negative or huge column.
-	clock.Advance(time.Second)
-	gen, _, _ = m.wantTraffic(clock.Now())
-	m.applyTraffic(gen, &LiveTraffic{AtUnixNano: at + int64(100*time.Millisecond), BillableBytes: 10, TotalBytes: 10}, nil)
-	for _, v := range m.zoom.billable {
-		if v < 0 || v > 1e9 {
-			t.Fatalf("column %v after a counter reset", v)
-		}
+	if got := len(m.winRing.at); got != before {
+		t.Fatalf("a reading on a stalled clock added %d readings", got-before)
 	}
 }
 
-// The rule the graph exists to keep, for the zoom window too: once a column is
-// complete it does not change as the window scrolls.
-func TestTopZoomColumnsHoldStillAsTheWindowScrolls(t *testing.T) {
+func TestTopGraphWindowIsPerProvider(t *testing.T) {
 	m, clock := liveModel(t, 100*time.Millisecond)
 	var at int64 = 1_000_000_000_000
 	var bytes uint64
-	const cols = 100
-	seen := map[int64]float64{}
-	changes := 0
-	for i := 0; i < 400; i++ {
-		// Bursty traffic, so a shifted column would show.
-		step := uint64(burst(int64(i))) / 10
-		feedTraffic(t, m, clock, 1, step, &at, &bytes)
-		sr := m.series()
-		_ = sr
-		z := m.zoom
-		ids, vals := tui.GraphBuckets(z.billable, cols, z.seq, m.zoomCapacity())
-		for j := 0; j < len(ids)-1; j++ {
-			if prev, ok := seen[ids[j]]; ok && math.Abs(prev-vals[j]) > 1e-6 {
-				changes++
-			}
-			seen[ids[j]] = vals[j]
-		}
-	}
-	if changes > 0 {
-		t.Fatalf("%d completed zoom columns changed while scrolling", changes)
+	feedTraffic(t, m, clock, 20, 1_000_000, &at, &bytes)
+	showOnSim(t, m, 120, 40) // feeds the axis
+	m.providers = topProviders(2)
+	m.selectProvider(1)
+	if len(m.winRing.at) != 0 || m.winScaleB[topGraphWindowDefault].top != 0 {
+		t.Fatal("the window and its axis belong to one provider")
 	}
 }
 
-func TestTopZoomKeyTogglesTheGraphs(t *testing.T) {
-	m, clock := liveModel(t, 100*time.Millisecond)
-	var at int64 = 1_000_000_000_000
-	var bytes uint64
-
-	pressKey(m, 'w')
-	if sr := m.series(); !sr.zoom || len(sr.billable) != 0 {
-		t.Fatalf("zoom before any reading: %+v", sr.zoom)
-	}
-	txt, _ := showOnSim(t, m, 120, 40)
-	if !strings.Contains(txt, "Billable (collecting)") || !strings.Contains(txt, "collecting live readings") {
-		t.Fatalf("empty zoom must say it is collecting:\n%s", txt)
-	}
-
-	feedTraffic(t, m, clock, 30, 1_000_000, &at, &bytes)
-	txt, _ = showOnSim(t, m, 120, 40)
-	if !strings.Contains(txt, "Billable, 2s") || strings.Contains(txt, "(collecting)") {
-		t.Fatalf("zoom title:\n%s", txt)
-	}
-	if !strings.Contains(txt, "Total traffic, 2s") {
-		t.Fatalf("total graph did not zoom:\n%s", txt)
-	}
-
-	pressKey(m, 'w')
-	txt, _ = showOnSim(t, m, 120, 40)
-	if !strings.Contains(txt, "Billable,") || strings.Contains(txt, "collecting") {
-		t.Fatalf("zoom did not toggle off:\n%s", txt)
-	}
-}
-
-func TestTopZoomFallsBackForAProviderWithoutTheTrafficCommand(t *testing.T) {
+func TestTopGraphWindowStaysOnTheProvidersHistoryWithoutTraffic(t *testing.T) {
 	m, clock := liveModel(t, 100*time.Millisecond)
 	gen, _, _ := m.wantTraffic(clock.Now())
 	m.applyTraffic(gen, nil, errTrafficUnsupported)
-	pressKey(m, 'w')
-	if sr := m.series(); sr.zoom {
-		t.Fatal("zoom needs the live counters; without them the graphs stay on the provider's history")
+	if sr := m.series(); sr.window {
+		t.Fatal("without the traffic counters the graphs stay on the provider's own history")
 	}
 }
 
@@ -696,8 +606,9 @@ func TestTopInternalsDegradesWithoutTheTransportRows(t *testing.T) {
 	if !strings.Contains(tall, "h3      up 1") || !strings.Contains(tall, "h3/all") {
 		t.Fatalf("a tall box must draw the transport rows:\n%s", tall)
 	}
-	// 33 rows leaves the panel exactly topInternalsRows after Now and Resources.
-	short := withTransport(33)
+	// 34 rows leaves the panel exactly topInternalsRows after the strip, Now
+	// and Resources.
+	short := withTransport(34)
 	if !strings.Contains(short, "Internals") || !strings.Contains(short, "gor") {
 		t.Fatalf("the panel and its runtime figures must survive a box too short for the split:\n%s", short)
 	}
@@ -730,11 +641,11 @@ func TestTopBytePairScalesToTheFigure(t *testing.T) {
 	}
 }
 
-func TestTopZoomGoldenScreen(t *testing.T) {
+func TestTopGraphWindowGoldenScreen(t *testing.T) {
 	m, clock := liveModel(t, 100*time.Millisecond)
 	var at int64 = 1_000_000_000_000
 	var bytes uint64
-	// A ramp with a burst, so the zoom graph has a shape.
+	// A ramp with a burst, so the window graph has a shape.
 	for i := 0; i < 150; i++ {
 		step := uint64(2_000_000 + i*20_000)
 		if i > 90 && i < 110 {
@@ -742,9 +653,12 @@ func TestTopZoomGoldenScreen(t *testing.T) {
 		}
 		feedTraffic(t, m, clock, 1, step, &at, &bytes)
 	}
+	// Three steps from the default one minute reach the quarter hour.
+	pressKey(m, 'w')
+	pressKey(m, 'w')
 	pressKey(m, 'w')
 	got, _ := showOnSim(t, m, 120, 40)
-	assertGolden(t, "top_zoom_120x40", got)
+	assertGolden(t, "top_graph_window_120x40", got)
 }
 
 // The Internals panel is one more section on the screen; it must not make the

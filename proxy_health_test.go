@@ -935,7 +935,7 @@ func TestProxyBandwidthTotals(t *testing.T) {
 	b := RegisterProxyBandwidth(2)
 	b.BillableRx.Store(1)
 	b.TotalTx.Store(9)
-	RegisterProxy(3, "10.0.0.3:1080", "10.0.0.3:1080") // registered with no bandwidth yet
+	RegisterProxy(3, "10.0.0.3:1080", "10.0.0.3:1080")
 
 	billable, total := ProxyBandwidthTotals()
 	if billable != 151 || total != 609 {
@@ -945,6 +945,66 @@ func TestProxyBandwidthTotals(t *testing.T) {
 	// Billable traffic is a subset of total: the two counters stay separate.
 	if billable > total {
 		t.Fatalf("billable %d exceeds total %d", billable, total)
+	}
+}
+
+// ProxyBandwidthDirectionTotals sums each lane separately and stays equal to the
+// sums reported by ProxyBandwidthTotals.
+func TestProxyBandwidthDirectionTotals(t *testing.T) {
+	resetProxyHealthForTest()
+	if bRx, bTx, tRx, tTx := ProxyBandwidthDirectionTotals(); bRx != 0 || bTx != 0 || tRx != 0 || tTx != 0 {
+		t.Fatalf("empty registry direction totals = %d/%d/%d/%d, want 0/0/0/0", bRx, bTx, tRx, tTx)
+	}
+
+	a := RegisterProxyBandwidth(1)
+	a.BillableRx.Store(100)
+	a.BillableTx.Store(50)
+	a.TotalRx.Store(400)
+	a.TotalTx.Store(200)
+	b := RegisterProxyBandwidth(2)
+	b.BillableRx.Store(1)
+	b.BillableTx.Store(9)
+	b.TotalRx.Store(900)
+	b.TotalTx.Store(1800)
+	RegisterProxy(3, "10.0.0.3:1080", "10.0.0.3:1080")
+
+	bRx, bTx, tRx, tTx := ProxyBandwidthDirectionTotals()
+	if bRx != 101 || bTx != 59 || tRx != 1300 || tTx != 2000 {
+		t.Fatalf("direction totals = %d/%d/%d/%d, want 101/59/1300/2000", bRx, bTx, tRx, tTx)
+	}
+
+	// The lane sums equal the values ProxyBandwidthTotals reports.
+	if billable, total := ProxyBandwidthTotals(); billable != bRx+bTx || total != tRx+tTx {
+		t.Fatalf("sums = %d/%d, direction lanes = %d/%d", billable, total, bRx+bTx, tRx+tTx)
+	}
+
+	// Billable is a subset of total: each lane stays below its counterpart.
+	if bRx > tRx {
+		t.Fatalf("billable %d exceeds total %d", bRx, tRx)
+	}
+}
+
+// A removed proxy drops its directional totals while the remaining ones stay,
+// so the aggregate dips until the reader resets its window — readers must skip
+// decreases rather than treat them as negative traffic.
+func TestProxyBandwidthDirectionTotalsDropOnRemovedProxy(t *testing.T) {
+	resetProxyHealthForTest()
+	a := RegisterProxyBandwidth(1)
+	a.BillableRx.Store(100)
+	a.BillableTx.Store(50)
+	a.TotalRx.Store(400)
+	a.TotalTx.Store(200)
+
+	bRx, bTx, tRx, tTx := ProxyBandwidthDirectionTotals()
+	if bRx != 100 || bTx != 50 || tRx != 400 || tTx != 200 {
+		t.Fatalf("direction totals = %d/%d/%d/%d, want 100/50/400/200", bRx, bTx, tRx, tTx)
+	}
+
+	UnregisterProxy(1)
+
+	bRx, bTx, tRx, tTx = ProxyBandwidthDirectionTotals()
+	if bRx != 0 || bTx != 0 || tRx != 0 || tTx != 0 {
+		t.Fatalf("after removal direction totals = %d/%d/%d/%d, want 0/0/0/0", bRx, bTx, tRx, tTx)
 	}
 }
 

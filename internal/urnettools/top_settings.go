@@ -22,6 +22,7 @@ import (
 type topSettings struct {
 	Theme                 string       // a tui.ThemeNames entry, or "" for the environment's choice
 	Graph                 string       // a tui.GraphSymbolNames entry, or "" for braille
+	GraphWindow           string       // a topGraphWindowNames entry, or "" for the default level
 	ProxyAfterglowSeconds int          // 0 selects the default
 	ProxyHeatmapStyle     heatmapStyle // zero selects Glow
 	// The operator's arrangement of the top screen, drawn by their own hand:
@@ -29,6 +30,25 @@ type topSettings struct {
 	// missing value means the default for the terminal size.
 	LayoutSideWidth int            // explicit right column width; 0 = auto
 	LayoutDividers  map[string]int // divider name -> content row index
+	// Logo is the ui.logo setting for the commands that print outside top.
+	// nil means the operator never chose, and the default is on.
+	Logo *bool
+}
+
+// logoOn reports whether the program may draw its logo. The default is on.
+func (s topSettings) logoOn() bool { return s.Logo == nil || *s.Logo }
+
+// parseOnOff reads the on/off spellings a settings file or an environment
+// variable may hold.
+func parseOnOff(value string) (on, ok bool) {
+	v := strings.ToLower(strings.TrimSpace(value))
+	switch v {
+	case "on", "true", "1", "yes":
+		return true, true
+	case "off", "false", "0", "no":
+		return false, true
+	}
+	return false, false
 }
 
 // topSettingsPath is ~/.config/urnet-tools/top.conf (or the platform's
@@ -77,6 +97,10 @@ func loadTopSettings(path string) topSettings {
 			}
 		case key == "proxy.heatmap_style":
 			s.ProxyHeatmapStyle = parseHeatmapStyle(val)
+		case key == "graph.window":
+			if _, ok := topGraphWindowIndex(val); ok {
+				s.GraphWindow = val
+			}
 		case key == "proxy.afterglow_seconds":
 			if v, err := strconv.Atoi(val); err == nil && v >= 1 && v <= 60 {
 				s.ProxyAfterglowSeconds = v
@@ -91,6 +115,10 @@ func loadTopSettings(path string) topSettings {
 					s.LayoutDividers = map[string]int{}
 				}
 				s.LayoutDividers[strings.TrimPrefix(key, "layout.divider.")] = v
+			}
+		case key == "ui.logo":
+			if on, ok := parseOnOff(val); ok {
+				s.Logo = &on
 			}
 		}
 	}
@@ -112,6 +140,7 @@ func saveTopSettings(path string, s topSettings) error {
 	}
 	defer os.Remove(tmp.Name()) // a no-op once renamed
 	out := "# urnet-tools top: chosen in the m menu\ntheme = " + s.Theme + "\ngraph = " + s.Graph + "\n"
+	out += "graph.window = " + s.GraphWindow + "\n"
 	out += "proxy.heatmap_style = " + s.ProxyHeatmapStyle.String() + "\n"
 	if s.ProxyAfterglowSeconds > 0 {
 		out += fmt.Sprintf("proxy.afterglow_seconds = %d\n", s.ProxyAfterglowSeconds)
@@ -126,6 +155,13 @@ func saveTopSettings(path string, s topSettings) error {
 	sort.Strings(names)
 	for _, name := range names {
 		out += fmt.Sprintf("layout.divider.%s = %d\n", name, s.LayoutDividers[name])
+	}
+	if s.Logo != nil {
+		value := "on"
+		if !*s.Logo {
+			value = "off"
+		}
+		out += "ui.logo = " + value + "\n"
 	}
 	_, werr := tmp.WriteString(out)
 	if cerr := tmp.Chmod(0o644); werr == nil {

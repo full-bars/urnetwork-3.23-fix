@@ -63,8 +63,8 @@ func TestTopMenuSwallowsOtherKeys(t *testing.T) {
 		pressKey(m, r)
 	}
 	pressSpecial(m, tcellui.KeyTab)
-	if m.zoomOn || m.rt.showing || m.help || m.interval != topDefaultInterval || m.cur != 0 {
-		t.Fatalf("keys leaked through the menu: zoom=%v goroutines=%v help=%v interval=%v", m.zoomOn, m.rt.showing, m.help, m.interval)
+	if m.winLevel != topGraphWindowDefault || m.rt.showing || m.help || m.interval != topDefaultInterval || m.cur != 0 {
+		t.Fatalf("keys leaked through the menu: level=%q goroutines=%v help=%v interval=%v", topGraphWindowNames[m.winLevel], m.rt.showing, m.help, m.interval)
 	}
 }
 

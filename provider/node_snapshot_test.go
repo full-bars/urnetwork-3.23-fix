@@ -354,6 +354,7 @@ type fakeSnapshotEnv struct {
 	pending     bool
 	startup     string
 	traffic     map[string]uint64
+	dirSource   func() map[string]directionLanes
 	lifetime    uint64
 	hasLifetime bool
 	reads       int
@@ -378,6 +379,7 @@ func (f *fakeSnapshotEnv) sources() snapshotSources {
 		restartPending:   func() bool { return f.pending },
 		startup:          func() string { return f.startup },
 		traffic:          func() map[string]uint64 { return f.traffic },
+		directions:       f.dirSource,
 		lifetimeBillable: func() (uint64, bool) { return f.lifetime, f.hasLifetime },
 	}
 }

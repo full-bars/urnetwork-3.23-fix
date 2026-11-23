@@ -131,7 +131,7 @@ func TestTopLiveRatesReplaceTheSnapshotRateWhenAvailable(t *testing.T) {
 // own sample count, with the live rate as a separate tail column. The tail is not
 // appended to the series: a sample at a guessed index would be replaced by the
 // provider's real one a second later, changing a column that was already complete.
-func TestTopSeriesKeepsTheLiveRateAsASeparateTail(t *testing.T) {
+func TestTopSeriesEndsOnTheNewestReading(t *testing.T) {
 	m, clock := liveModel(t, 100*time.Millisecond)
 	m.snap.Rate.HistorySeq = 4242
 	base := len(m.snap.Rate.HistoryBps)
@@ -149,12 +149,14 @@ func TestTopSeriesKeepsTheLiveRateAsASeparateTail(t *testing.T) {
 		gen, _, _ := m.wantTraffic(clock.Now())
 		m.applyTraffic(gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i) * 1000, TotalBytes: uint64(i) * 3000}, nil)
 	}
+	// Once the counters arrive the graphs draw the fixed window, which ends at
+	// the newest reading rather than at the live rate.
 	sr = m.series()
-	if sr.live || len(sr.billable) != base+11 || len(sr.total) != len(m.snap.Traffic.TotalHistoryBps)+11 {
-		t.Fatalf("the series now includes the live rate: live=%v %d samples (want %d)", sr.live, len(sr.billable), base+11)
+	if !sr.window || len(sr.billable) != base+11 {
+		t.Fatalf("the series became a window: %v with %d samples (want %d)", sr.window, len(sr.billable), base+11)
 	}
-	if sr.anchor != m.trafficHistory.seq {
-		t.Fatalf("the live rate moved the anchor to %d, want %d", sr.anchor, m.trafficHistory.seq)
+	if want := m.winRing.at[len(m.winRing.at)-1]; sr.anchor != want {
+		t.Fatalf("the window ends at %d, want the newest reading %d", sr.anchor, want)
 	}
 	last := sr.billable[len(sr.billable)-1]
 	lastTotal := sr.total[len(sr.total)-1]

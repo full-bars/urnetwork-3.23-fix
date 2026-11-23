@@ -4,6 +4,7 @@ import fcntl
 import os
 from pathlib import Path
 import pty
+import struct
 import subprocess
 import tempfile
 import termios
@@ -773,6 +774,54 @@ mkdir() { case "$*" in */stub/.urnetwork*) printf 'mkdir denied\n' >&2; return 1
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("mkdir denied", result.stderr)
         self.assertIn("Could not create state directory", result.stdout)
+
+    def _run_logo(self, columns, force=False, use_tty=True):
+        env = os.environ.copy()
+        env["COLUMNS"] = columns
+        env["FORCE"] = "1" if force else "0"
+        script = '\n'.join((function("install_logo"),
+                           function("install_logo_columns"),
+                           "install_logo"))
+        if not use_tty:
+            result = subprocess.run(["sh", "-c", script], env=env, text=True,
+                                    capture_output=True)
+            return result.stdout
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, int(columns), 0, 0))
+        proc = subprocess.Popen(["sh", "-c", script], stdout=slave, stderr=slave,
+                                stdin=subprocess.DEVNULL, env=env)
+        os.close(slave)
+        chunks = []
+        while True:
+            try:
+                data = os.read(master, 4096)
+                if not data:
+                    break
+                chunks.append(data)
+            except OSError:
+                break
+        proc.wait()
+        os.close(master)
+        return b"".join(chunks).decode(errors="replace").replace("\r\n", "\n")
+
+    def test_logo_printed_on_a_wide_terminal(self):
+        out = self._run_logo("120")
+        self.assertIn("\u2597\u259f\u2588\u2588\u2588\u2584", out)
+        self.assertNotIn("\x1b[", out, "the wordmark carries no color codes")
+        rows = [line for line in out.splitlines() if line.strip()]
+        self.assertEqual(len(rows), 6, f"wordmark rows: {rows}")
+
+    def test_logo_hidden_below_its_width(self):
+        out = self._run_logo("81")
+        self.assertNotIn("\u2588", out)
+
+    def test_logo_hidden_when_unattended(self):
+        out = self._run_logo("120", force=True)
+        self.assertNotIn("\u2588", out)
+
+    def test_logo_hidden_when_output_is_piped(self):
+        out = self._run_logo("120", use_tty=False)
+        self.assertNotIn("\u2588", out)
 
 
 if __name__ == "__main__":

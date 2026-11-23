@@ -445,6 +445,11 @@ func providerExtraMetrics() string {
 	// --- Supervised background loops ---
 	b.WriteString(supervisedLoopMetrics())
 
+	packetRx, packetTx := connect.ProxyBandwidthPacketTotals()
+	fmt.Fprintf(&b, "# HELP urnet_billable_packets_total Billable IP packets across registered proxies by direction.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_billable_packets_total counter\n")
+	fmt.Fprintf(&b, "urnet_billable_packets_total{dir=\"rx\"} %d\nurnet_billable_packets_total{dir=\"tx\"} %d\n", packetRx, packetTx)
+
 	// --- Lifetime persisted metrics ---
 	if lm := lifetimeStore; lm != nil {
 		pqe, clas, up, deny, recov, lost, bill := lm.Snapshot()

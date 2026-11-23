@@ -210,20 +210,27 @@ type topModel struct {
 	// live is the sliding-window rate built from the light traffic polls.
 	// trafficOK goes false once a provider says it does not know the command,
 	// and trafficBusy marks a traffic poll in flight.
-	live           topLive
-	trafficHistory topTrafficHistory
-	trafficOK      bool
-	trafficBusy    bool
-	lastTraffic    time.Time
+	live              topLive
+	trafficHistory    topTrafficHistory
+	transportsHistory topTransportHistory
+	trafficOK         bool
+	trafficBusy       bool
+	lastTraffic       time.Time
 
-	// zoomOn shows the last topZoomWindow at the poll rate instead of the
-	// provider's ten minutes. zoom is its ring, filled from the traffic polls.
-	zoomOn bool
-	zoom   topZoom
+	// winLevel selects the fixed graph window and winRing holds the readings it
+	// draws, one per traffic poll, trimmed to the longest window. peaks keeps
+	// the highest rates since start, and showPeaks says the Now panel had the
+	// rows for them this frame.
+	winLevel  int
+	winRing   topGraphRing
+	peaks     topPeaks
+	showPeaks bool
 
-	// The steady axis of each graph: the ten minute pair and the zoom pair.
-	scaleB, scaleT         topScale
-	zoomScaleB, zoomScaleT topScale
+	// The steady axis of each graph: one pair for the provider's own history
+	// and one per graph window, so a level change does not carry a scale.
+	scaleB, scaleT topScale
+	winScaleB      [len(topGraphWindows)]topScale
+	winScaleT      [len(topGraphWindows)]topScale
 
 	// windowHours selects the history the graphs draw: 0 keeps the provider's
 	// ten minute ring, 1 shows the downsampled hour, 24 the day. windowB and
@@ -247,6 +254,14 @@ type topModel struct {
 	proxyHeatmapStyle     heatmapStyle
 	proxyTimeline         []proxyTimelineSample
 	proxyTimelineGroups   int
+	// remote shows the mirrored transfer chart in the graph band (key r), and
+	// remoteScales holds the easing state of each of its scales by group.
+	remote       bool
+	remoteScales map[string]*remoteScale
+	// directionScales is the same easing state for the Billable and Total
+	// direction pages, keyed per page and direction so the two pages never
+	// share a height and neither eases against the other's peak.
+	directionScales map[string]*remoteScale
 	// proxyGridW and proxyGridH are the text-cell size of the drawn grid, used
 	// for hit testing. Set by drawProxyGrid each frame.
 	proxyGridW, proxyGridH int
@@ -271,9 +286,23 @@ type topModel struct {
 	menuSel      int
 	menuNote     string
 
-	// mouse controls terminal mouse reporting; M and --no-mouse toggle it off so
-	// unshifted drag selects text in the terminal.
+	// mouse is on in Mouse Mode, where the terminal reports clicks and hover to
+	// top, and off in Keyboard Mode, where the terminal keeps them so its own
+	// text selection works. K switches between the two (M is an alias) and
+	// --no-mouse starts in Keyboard Mode.
 	mouse bool
+	// mouseSupported is false for a terminal that cannot report the mouse, so
+	// K can say why it changed nothing instead of doing it silently.
+	mouseSupported bool
+
+	// notice is a one-line message shown in place of the footer hints for a
+	// few seconds, and noticeUntil is when it gives the row back.
+	notice      string
+	noticeUntil time.Time
+
+	// clip sends the screen to the clipboard for the c key. It is nil when top
+	// has no terminal to copy from, and c is not offered then.
+	clip *topClipboard
 
 	// regions is the hit map for the last frame, rebuilt by every render.
 	regions []topRegion
@@ -291,6 +320,15 @@ type topModel struct {
 	contentRect                 tui.Rect
 	nowRows, resRows, extRows   int
 	showExtender, withInternals bool
+	// page is the selected page's index in topPages. It belongs to the session,
+	// not to a provider, so switching provider keeps the page.
+	page int
+	// stripHidden is set by the p key: the page strip is drawn by default and
+	// this hides it for the rest of the session. It is not saved anywhere.
+	stripHidden bool
+	// compact records that the last frame was the single-panel view, where the
+	// page keys do nothing.
+	compact bool
 	// gorScroll is the wheel offset of the goroutine list.
 	gorScroll int
 	gorHeight int
@@ -310,7 +348,7 @@ func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.T
 	if cur < 0 || cur >= len(providers) {
 		cur = 0
 	}
-	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true}
+	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true, mouseSupported: true, winLevel: topGraphWindowDefault}
 	m.providerSnaps = make([]*NodeSnapshot, len(providers))
 	m.providerExt = make([]ExtenderReading, len(providers))
 	m.rt.reset()
@@ -396,6 +434,7 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 	case errors.Is(err, errTrafficUnsupported):
 		m.trafficOK = false
 		m.live.reset()
+		m.transportsHistory.reset()
 	case err != nil || lt == nil:
 	default:
 		m.markAnswered(m.now())
@@ -406,9 +445,23 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 			// rate window so its average does not fill the gap with traffic.
 			if time.Duration(lt.AtUnixNano-last) > 2*m.interval {
 				m.live.reset()
+				m.transportsHistory.reset()
 			}
 		}
 		m.live.add(lt.AtUnixNano, lt.BillableBytes, lt.TotalBytes)
+		// The peak is the reading's own rate, per second however fast the poll
+		// is. A counter that went backwards restarts the live window, so the
+		// pair is only read when it moves forward.
+		if n := len(m.live.samples); n >= 2 {
+			a, b := m.live.samples[n-2], m.live.samples[n-1]
+			if span := time.Duration(b.at - a.at); span > 0 && b.billable >= a.billable && b.total >= a.total {
+				secs := span.Seconds()
+				m.peaks.observeLive(m.now(), float64(b.billable-a.billable)/secs, float64(b.total-a.total)/secs)
+			}
+		}
+		// The transports page differences two of these readings into a window
+		// share, so they are kept next to the live window that accepted them.
+		m.transportsHistory.push(lt.AtUnixNano, lt.Transports)
 		// One zoom column per reading the window accepted; a stalled clock adds
 		// none, and a restarted window has no span yet, so `recent` says not ok.
 		if n := len(m.live.samples); n > 0 && m.live.samples[n-1].at != last {
@@ -422,6 +475,10 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 						}
 						at := lt.AtUnixNano - int64(len(history)-i)*int64(time.Second)
 						m.trafficHistory.push(at, value, total)
+						// The graphs draw the window from the same history, so
+						// a provider that has been up for a while fills the
+						// longer levels at once instead of from the first poll.
+						m.winRing.push(at-int64(time.Second), time.Second, value, total)
 					}
 				}
 				if m.interval <= time.Second {
@@ -429,8 +486,7 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 				} else {
 					m.trafficHistory.pushSlot(lt.AtUnixNano, b, t)
 				}
-				m.zoom.push(lt.AtUnixNano, b, t)
-				m.zoom.spans[len(m.zoom.spans)-1] = time.Duration(lt.AtUnixNano - last)
+				m.winRing.push(lt.AtUnixNano, time.Duration(lt.AtUnixNano-last), b, t)
 			}
 		}
 	}
@@ -478,6 +534,15 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 	}
 	m.conn = topConnected
 	m.snap = snap
+	// The provider computes its own one and five minute averages, so the peaks
+	// come from the same figures the rows above them show.
+	{
+		total1m, total5m := 0.0, 0.0
+		if tr := snap.Traffic; tr != nil {
+			total1m, total5m = tr.TotalAvg1mBps, tr.TotalAvg5mBps
+		}
+		m.peaks.observeAverages(now, snap.Rate.Avg1mBps, snap.Rate.Avg5mBps, total1m, total5m)
+	}
 	if m.cur < len(m.providerSnaps) {
 		// The overview rows read the same snapshot the live screen does, so
 		// the per provider history accumulates as top polls.
@@ -508,7 +573,7 @@ func (m *topModel) lost(now time.Time, err error) {
 	m.lastErr = reason
 	m.nextRetry = now.Add(m.retry)
 	m.live.reset() // a rate from before the outage would read as current
-	m.zoom.reset()
+	m.transportsHistory.reset()
 	m.failStreak, m.backoff, m.slowReported = 0, 0, false
 	// Clear only the Internals DATA, not its state. ok/gOK say whether the
 	// provider knows the command (its refusal survives the outage apparent,
@@ -652,10 +717,17 @@ const (
 	// topRefetch means the selection changed and the new provider should be
 	// asked at once.
 	topRefetch
+	// topCopy means the loop should send the frame it last drew to the
+	// clipboard. The loop owns the buffer, so the key only asks for it.
+	topCopy
 )
 
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
+	// Whether this event may switch pages is decided before the event closes
+	// anything: the key or click that dismisses a popup must not also jump to
+	// another page.
+	pageKeys := m.pageKeysActive()
 	if ev.Kind == tcellui.EventKey || ev.Kind == tcellui.EventRune {
 		m.proxyPopup = false
 	}
@@ -719,6 +791,14 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			return m.selectProvider(1)
 		case tcellui.KeyBacktab:
 			return m.selectProvider(-1)
+		case tcellui.KeyPageDown:
+			if pageKeys {
+				m.stepPage(1)
+			}
+		case tcellui.KeyPageUp:
+			if pageKeys {
+				m.stepPage(-1)
+			}
 		}
 	case tcellui.EventRune:
 		switch ev.Rune {
@@ -729,8 +809,19 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.help = !m.help
 		case 'm':
 			m.menu, m.help, m.menuNote = true, false, ""
+		case 'K':
+			m.toggleMouseMode()
 		case 'M':
-			m.mouse = !m.mouse
+			// The old key, kept as a hidden alias of K so nobody loses the
+			// toggle. It is not in the footer, the help or the docs.
+			m.toggleMouseMode()
+		case 'c':
+			// The loop holds the frame, so the key only asks for the copy.
+			if m.clip == nil {
+				m.setNotice(topNoticeNoClipboard)
+				return topNone
+			}
+			return topCopy
 		case 't':
 			switch m.windowHours {
 			case 0:
@@ -755,8 +846,20 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.stepInterval(1)
 		case '-', '_':
 			m.stepInterval(-1)
-		case 'w', 'W':
-			m.zoomOn = !m.zoomOn
+		case 'w':
+			m.stepGraphWindow(1)
+			m.saveSettings()
+		case 'W':
+			m.stepGraphWindow(-1)
+			m.saveSettings()
+		case 'r', 'R':
+			// The Remote chart takes the bottom of the graph band. Switching it
+			// on starts its scales from the current window, not from whatever
+			// they eased to the last time it was shown.
+			m.remote = !m.remote
+			if m.remote {
+				m.remoteScales = nil
+			}
 		case 'u', 'U':
 			tui.SetDecimalUnits(!tui.DecimalUnits())
 		case 'g', 'G':
@@ -776,6 +879,27 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 					m.panel, m.rt.showing = "goroutines", true
 				}
 				m.rt.gLast = time.Time{}
+			}
+		case 'p', 'P':
+			// The page strip belongs to the page keys: a popup, the overview,
+			// the help or the menu keeps the key for itself, and the compact
+			// view has no strip to toggle.
+			if pageKeys {
+				m.togglePageStrip()
+			}
+		case ']':
+			if pageKeys {
+				m.stepPage(1)
+			}
+		case '[':
+			if pageKeys {
+				m.stepPage(-1)
+			}
+		default:
+			// 1 to 9 jump straight to a page, numbered as the strip numbers
+			// them.
+			if ev.Rune >= '1' && ev.Rune <= '9' && pageKeys {
+				m.selectPage(int(ev.Rune - '1'))
 			}
 		}
 	}
@@ -805,6 +929,13 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.fetching, m.lastFetch = false, time.Time{}
 	m.live.reset()
 	m.trafficHistory = topTrafficHistory{}
+	m.winRing.reset()
+	m.peaks.reset()
+	for i := range m.winScaleB {
+		m.winScaleB[i].reset()
+		m.winScaleT[i].reset()
+	}
+	m.transportsHistory.reset()
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
 	m.proxyCells, m.proxyCellsAt = nil, time.Time{}
 	m.proxyGlow = nil
@@ -816,15 +947,19 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.extenderBusy = false
 	m.lastExtender = time.Time{}
 	m.lastAnswer, m.lastDone, m.failStreak, m.backoff, m.slowReported = time.Time{}, time.Time{}, 0, 0, false
-	m.zoom.reset()
+	m.winRing.reset()
+	for i := range m.winScaleB {
+		m.winScaleB[i].reset()
+		m.winScaleT[i].reset()
+	}
 	m.scaleB.reset()
 	m.scaleT.reset()
-	m.zoomScaleB.reset()
-	m.zoomScaleT.reset()
 	m.windowB.reset()
 	m.windowT.reset()
 	m.windowScaleB.reset()
 	m.windowScaleT.reset()
+	m.remoteScales = nil
+	m.directionScales = nil
 	showing := m.rt.showing
 	m.rt.reset()
 	m.rt.showing = showing // the view choice is the user's, not the provider's
@@ -929,11 +1064,18 @@ type topSeries struct {
 	tailBillable, tailTotal float64
 	live                    bool
 	// capacity is the most columns the graph holds, and scaleB and scaleT the
-	// steady axis of each graph. zoom marks the fifteen second window.
+	// steady axis of each graph. window says the series is one fixed graph
+	// window with level its index in topGraphWindows. at, spans and covered
+	// describe the readings behind the window so drawGraph can place them on a
+	// time axis of the plot width.
 	capacity       int
 	scaleB, scaleT *topScale
-	zoom           bool
+	window         bool
 	columns        bool
+	level          int
+	covered        time.Duration
+	full           bool
+	at             []int64
 	spans          []time.Duration
 }
 
@@ -943,19 +1085,19 @@ func (m *topModel) series() topSeries {
 	if m.snap == nil {
 		return out
 	}
-	if m.zoomOn && m.trafficOK && m.conn == topConnected {
-		// The time grid keeps readings aligned across interval changes.
-		out.zoom, out.capacity = true, m.zoomCapacity()
-		out.scaleB, out.scaleT = &m.zoomScaleB, &m.zoomScaleT
-		var total []float64
-		if m.interval <= time.Second {
-			out.billable, total, out.anchor = m.zoom.billable, m.zoom.total, m.zoom.seq
-			out.spans, out.columns = m.zoom.spans, true
-		} else {
-			out.billable, total, out.anchor = m.zoom.grid()
+	if len(m.winRing.at) > 0 {
+		level := m.winLevel
+		if level < 0 || level >= len(topGraphWindows) {
+			level = topGraphWindowDefault
 		}
+		out.window, out.level = true, level
+		out.scaleB, out.scaleT = &m.winScaleB[level], &m.winScaleT[level]
+		out.at, out.spans = m.winRing.at, m.winRing.spans
+		out.anchor = m.winRing.at[len(m.winRing.at)-1]
+		out.covered, out.full = m.winRing.cover(topGraphWindows[level])
+		out.billable = m.winRing.billable
 		if m.snap.Traffic != nil {
-			out.total = append([]float64{}, total...)
+			out.total = m.winRing.total
 		}
 		return out
 	}
@@ -980,17 +1122,6 @@ func (m *topModel) series() topSeries {
 	}
 	out.capacity = topGraphCapacity
 	out.scaleB, out.scaleT = &m.scaleB, &m.scaleT
-	if len(m.trafficHistory.billable) > 0 {
-		out.anchor = m.trafficHistory.second
-		if m.interval <= time.Second {
-			out.anchor, out.columns, out.spans = m.trafficHistory.seq, true, m.trafficHistory.spans
-		}
-		out.billable = m.trafficHistory.billable
-		if m.snap.Traffic != nil {
-			out.total = m.trafficHistory.total
-		}
-		return out
-	}
 	switch {
 	case m.snap.Rate.HistorySeq > 0:
 		out.anchor = int64(m.snap.Rate.HistorySeq)

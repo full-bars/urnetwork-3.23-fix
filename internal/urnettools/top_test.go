@@ -201,6 +201,9 @@ func TestTopGoldenScreens(t *testing.T) {
 		{"top_compact_idle_mono_40x8", 40, 8, tui.MonoTheme(), func(m *topModel) { m.apply(0, topIdle(t), nil) }},
 		{"top_help_100x30", 100, 30, tui.DefaultTheme(), func(m *topModel) {
 			m.apply(0, topFlowing(t), nil)
+			// A real screen always has a clipboard, so the golden shows the
+			// full key list.
+			m.clip = &topClipboard{}
 			m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: '?'})
 		}},
 		{"top_flowing_high_contrast_120x40", 120, 40, mustTheme(t, "high-contrast"), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},
@@ -543,7 +546,7 @@ func TestParseTopFlags(t *testing.T) {
 		{[]string{"--interval"}, 0, nil, "needs a value"},
 	}
 	for _, c := range cases {
-		iv, copyOnQuit, plain, rest, err := parseTopFlags(c.args)
+		iv, copyOnQuit, plain, _, rest, err := parseTopFlags(c.args)
 		if c.err != "" {
 			if err == nil || !strings.Contains(err.Error(), c.err) {
 				t.Errorf("%v: err = %v, want %q", c.args, err, c.err)
@@ -555,9 +558,22 @@ func TestParseTopFlags(t *testing.T) {
 		}
 	}
 	// --copy and --plain ride along without disturbing the target flags.
-	iv, copyOnQuit, plain, rest, err := parseTopFlags([]string{"--copy", "--network", "n", "--plain", "--interval", "2s"})
-	if err != nil || iv != 2*time.Second || !copyOnQuit || !plain || strings.Join(rest, " ") != "--network n" {
-		t.Fatalf("unexpected flags: %v %v %v %v %v", iv, copyOnQuit, plain, rest, err)
+	iv, copyOnQuit, plain, theme, rest, err := parseTopFlags([]string{"--copy", "--network", "n", "--plain", "--interval", "2s"})
+	if err != nil || iv != 2*time.Second || !copyOnQuit || !plain || theme != "" || strings.Join(rest, " ") != "--network n" {
+		t.Fatalf("unexpected flags: %v %v %v %q %v %v", iv, copyOnQuit, plain, theme, rest, err)
+	}
+	// --theme takes a value in both spelled forms and stays out of the target args.
+	for _, args := range [][]string{
+		{"--theme", "neon", "--network", "n"},
+		{"--theme=neon", "--network", "n"},
+	} {
+		_, _, _, theme, rest, err := parseTopFlags(args)
+		if err != nil || theme != "neon" || strings.Join(rest, " ") != "--network n" {
+			t.Errorf("%v: theme = %q rest = %v err = %v", args, theme, rest, err)
+		}
+	}
+	if _, _, _, _, _, err := parseTopFlags([]string{"--theme"}); err == nil || !strings.Contains(err.Error(), "needs a value") {
+		t.Errorf("--theme without a value: err = %v, want needs a value", err)
 	}
 	if !hasNoMouseFlag([]string{"--interval", "1s", "--no-mouse"}) {
 		t.Fatal("hasNoMouseFlag should detect --no-mouse")
@@ -575,21 +591,27 @@ func TestTopMouseToggleAndHelpText(t *testing.T) {
 		t.Fatal("mouse should be enabled by default")
 	}
 	txt, _ := showOnSim(t, m, 100, 30)
-	if !strings.Contains(txt, "M mouse on") {
-		t.Fatalf("footer should show mouse on:\n%s", txt)
+	if !strings.Contains(txt, "K keyboard mode") {
+		t.Fatalf("footer should offer keyboard mode:\n%s", txt)
 	}
-	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 'M'})
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 'K'})
 	if m.mouse {
-		t.Fatal("M should toggle mouse off")
+		t.Fatal("K should switch to keyboard mode")
 	}
 	txt, _ = showOnSim(t, m, 100, 30)
-	if !strings.Contains(txt, "M mouse off") {
-		t.Fatalf("footer should show mouse off:\n%s", txt)
+	if !strings.Contains(txt, "Keyboard Mode: select text with your terminal") {
+		t.Fatalf("the switch should say what keyboard mode does:\n%s", txt)
+	}
+	// Once the message has had its few seconds, the footer hints are back.
+	clock.t = topBase.Add(10 * time.Second)
+	txt, _ = showOnSim(t, m, 100, 30)
+	if !strings.Contains(txt, "K mouse mode") || !strings.Contains(txt, "keyboard") {
+		t.Fatalf("footer should offer mouse mode and mark keyboard mode:\n%s", txt)
 	}
 	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: '?'})
 	txt, _ = showOnSim(t, m, 100, 30)
-	if !strings.Contains(txt, "Shift+drag selects text in most terminals") {
-		t.Fatalf("help overlay should explain Shift+drag text selection:\n%s", txt)
+	if !strings.Contains(txt, "keyboard mode to select text") {
+		t.Fatalf("help overlay should explain keyboard mode:\n%s", txt)
 	}
 }
 

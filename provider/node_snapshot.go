@@ -67,22 +67,166 @@ type SnapshotTraffic struct {
 	TotalAvg1mBps   int64   `json:"total_avg_1m_bps"`
 	TotalAvg5mBps   int64   `json:"total_avg_5m_bps"`
 	TotalHistoryBps []int64 `json:"total_history_bps"`
+
+	// The per-direction block, nil from a provider that predates the counters.
+	// It carries the same rate and history figures split by rx and tx, which is
+	// how the reader tells download from upload.
+	Directions *SnapshotTrafficDirections `json:"directions,omitempty"`
+	Packets    *SnapshotTrafficPackets    `json:"packets,omitempty"`
+}
+
+// SnapshotTrafficDirection is one direction's billable or total rate, sampled
+// the same way and at the same interval as SnapshotRate, with the same per-second
+// history.
+type SnapshotTrafficDirection struct {
+	NowBps     int64   `json:"now_bps"`
+	Avg1mBps   int64   `json:"avg_1m_bps"`
+	Avg5mBps   int64   `json:"avg_5m_bps"`
+	HistoryBps []int64 `json:"history_bps"`
+}
+
+// SnapshotTrafficDirections is the billable versus total split by direction:
+// rx (download, toward the client) and tx (upload, away from the client) per
+// quantity. Nil at the provider means the running provider did not report the
+// directional counters.
+type SnapshotTrafficDirections struct {
+	BillableRx SnapshotTrafficDirection `json:"billable_rx"`
+	BillableTx SnapshotTrafficDirection `json:"billable_tx"`
+	TotalRx    SnapshotTrafficDirection `json:"total_rx"`
+	TotalTx    SnapshotTrafficDirection `json:"total_tx"`
+}
+
+// SnapshotPacketRate reports billable IP packets per second.
+type SnapshotPacketRate struct {
+	NowPps     int64   `json:"now_pps"`
+	Avg1mPps   int64   `json:"avg_1m_pps"`
+	Avg5mPps   int64   `json:"avg_5m_pps"`
+	HistoryPps []int64 `json:"history_pps"`
+}
+
+type SnapshotTrafficPackets struct {
+	BillableRx SnapshotPacketRate `json:"billable_rx"`
+	BillableTx SnapshotPacketRate `json:"billable_tx"`
 }
 
 // LiveTraffic is the light reply to the "traffic" command: live counter sums and
 // the provider's clock at the moment they were read. urnet-tools top polls it
 // at 100ms and derives rates from the deltas, so it never rebuilds a snapshot.
 // The sums drop when a proxy is removed or respawns; readers skip a decrease.
+//
+// The four per-direction fields are always sent, so a zero is a real zero. A
+// reader that does not find them at all is talking to a provider that predates
+// them and has no direction split to draw.
 type LiveTraffic struct {
 	AtUnixNano    int64  `json:"at_unix_nano"`
 	BillableBytes uint64 `json:"billable_bytes"`
 	TotalBytes    uint64 `json:"total_bytes"`
+
+	BillableRxBytes   uint64 `json:"billable_rx_bytes"`
+	BillableTxBytes   uint64 `json:"billable_tx_bytes"`
+	TotalRxBytes      uint64 `json:"total_rx_bytes"`
+	TotalTxBytes      uint64 `json:"total_tx_bytes"`
+	BillableRxPackets uint64 `json:"billable_rx_packets"`
+	BillableTxPackets uint64 `json:"billable_tx_packets"`
+
+	// Transports is the per-kind transport block. A provider that predates it
+	// sends nothing here.
+	Transports *LiveTransports `json:"transports,omitempty"`
+}
+
+// LiveTransport is one transport kind's cumulative payload counters and the
+// number of its connections up now. The counters are cumulative like the byte
+// totals, so a reader derives a window share from two samples.
+type LiveTransport struct {
+	BytesTx  uint64 `json:"bytes_tx"`
+	BytesRx  uint64 `json:"bytes_rx"`
+	FramesTx uint64 `json:"frames_tx"`
+	FramesRx uint64 `json:"frames_rx"`
+	Up       int64  `json:"up"`
+}
+
+// LiveTransports is the per-kind transport block of the traffic reply. The two
+// H1 carriers are always present because they are the segments the bar splits;
+// a mode the provider never ran is left out rather than sent as zeros.
+type LiveTransports struct {
+	H1WebSocket *LiveTransport `json:"h1_websocket,omitempty"`
+	H1Plus      *LiveTransport `json:"h1_plus,omitempty"`
+	H3          *LiveTransport `json:"h3,omitempty"`
+	DNS         *LiveTransport `json:"dns,omitempty"`
+	DNSPump     *LiveTransport `json:"dns_pump,omitempty"`
+}
+
+// liveTransportsSample copies the mode counters and the live H1 gauge into the
+// transports block.
+func liveTransportsSample(modes connect.TransportModeStatsSnapshot, conns connect.H1ConnectionStatsSnapshot) *LiveTransports {
+	transports := &LiveTransports{
+		H1WebSocket: &LiveTransport{
+			BytesTx:  modes.H1WebSocketBytesTx,
+			BytesRx:  modes.H1WebSocketBytesRx,
+			FramesTx: modes.H1WebSocketFramesTx,
+			FramesRx: modes.H1WebSocketFramesRx,
+			Up:       conns.WebSocketConnectionCount,
+		},
+		H1Plus: &LiveTransport{
+			BytesTx:  modes.H1PlusBytesTx,
+			BytesRx:  modes.H1PlusBytesRx,
+			FramesTx: modes.H1PlusFramesTx,
+			FramesRx: modes.H1PlusFramesRx,
+			Up:       conns.H1PlusConnectionCount,
+		},
+	}
+	if carried(modes.H3FramesTx, modes.H3FramesRx, modes.H3BytesTx, modes.H3BytesRx, modes.H3Up) {
+		transports.H3 = &LiveTransport{
+			BytesTx:  modes.H3BytesTx,
+			BytesRx:  modes.H3BytesRx,
+			FramesTx: modes.H3FramesTx,
+			FramesRx: modes.H3FramesRx,
+			Up:       modes.H3Up,
+		}
+	}
+	if carried(modes.Dns.FramesTx, modes.Dns.FramesRx, modes.Dns.BytesTx, modes.Dns.BytesRx, modes.Dns.Up) || modes.Dns.Drops > 0 {
+		transports.DNS = &LiveTransport{
+			BytesTx:  modes.Dns.BytesTx,
+			BytesRx:  modes.Dns.BytesRx,
+			FramesTx: modes.Dns.FramesTx,
+			FramesRx: modes.Dns.FramesRx,
+			Up:       modes.Dns.Up,
+		}
+	}
+	if carried(modes.DnsPump.FramesTx, modes.DnsPump.FramesRx, modes.DnsPump.BytesTx, modes.DnsPump.BytesRx, modes.DnsPump.Up) || modes.DnsPump.Drops > 0 {
+		transports.DNSPump = &LiveTransport{
+			BytesTx:  modes.DnsPump.BytesTx,
+			BytesRx:  modes.DnsPump.BytesRx,
+			FramesTx: modes.DnsPump.FramesTx,
+			FramesRx: modes.DnsPump.FramesRx,
+			Up:       modes.DnsPump.Up,
+		}
+	}
+	return transports
+}
+
+// carried reports whether a mode has ever carried a frame or has a connection
+// up now. A mode that has never been used is left out of the block.
+func carried(framesTx, framesRx, bytesTx, bytesRx uint64, up int64) bool {
+	return framesTx|framesRx|bytesTx|bytesRx != 0 || up != 0
 }
 
 // liveTrafficSample reads the counter sums at now.
-func liveTrafficSample(now time.Time, totals func() (billable, total uint64)) *LiveTraffic {
-	billable, total := totals()
-	return &LiveTraffic{AtUnixNano: now.UnixNano(), BillableBytes: billable, TotalBytes: total}
+func liveTrafficSample(now time.Time, totals func() (billableRx, billableTx, totalRx, totalTx uint64), packets func() (uint64, uint64)) *LiveTraffic {
+	billableRx, billableTx, totalRx, totalTx := totals()
+	rxPackets, txPackets := packets()
+	return &LiveTraffic{
+		AtUnixNano:        now.UnixNano(),
+		BillableBytes:     billableRx + billableTx,
+		TotalBytes:        totalRx + totalTx,
+		BillableRxBytes:   billableRx,
+		BillableTxBytes:   billableTx,
+		TotalRxBytes:      totalRx,
+		TotalTxBytes:      totalTx,
+		BillableRxPackets: rxPackets,
+		BillableTxPackets: txPackets,
+		Transports:        liveTransportsSample(connect.TransportModeStats(), h1ConnectionProcessStats.Snapshot()),
+	}
 }
 
 // SnapshotRate is billable throughput in bytes per second. HistoryBps holds
@@ -315,6 +459,164 @@ func avgTail(h []int64, n int) int64 {
 	return sum / int64(n)
 }
 
+// directionLanes is one proxy's cumulative byte counters, one field per
+// quantity and per direction.
+type directionLanes struct {
+	billableRx, billableTx uint64
+	totalRx, totalTx       uint64
+	packetRx, packetTx     uint64
+}
+
+// The four directional lanes, in sampler order: billable rx, billable tx,
+// total rx, total tx.
+const (
+	dirBillableRx = iota
+	dirBillableTx
+	dirTotalRx
+	dirTotalTx
+	dirPacketRx
+	dirPacketTx
+	directionLaneCount
+)
+
+// directionSampler turns the per-proxy directional counters into one rate ring
+// per quantity and direction. It uses the same delta method as rateSampler: a key
+// present in both samples contributes its delta, new and removed keys are
+// ignored, and a counter that went down (a proxy respawn hands back a zeroed
+// ProxyBandwidth) contributes nothing for that tick.
+type directionSampler struct {
+	mu       sync.Mutex
+	prev     map[string]directionLanes
+	prevTime time.Time
+	rings    [directionLaneCount][snapshotRingSize]int64
+	next     int // slot the next sample is written to
+	count    int // valid samples, capped at snapshotRingSize
+	// session keeps every delta counted since the provider started, per lane.
+	session [directionLaneCount]uint64
+	// recorded counts every sample ever written to the rings, so the newest
+	// sample keeps an absolute index.
+	recorded uint64
+}
+
+func newDirectionSampler() *directionSampler {
+	return &directionSampler{}
+}
+
+// sample records one tick. cur maps proxy key to the four directional counters
+// (billableRx, billableTx, totalRx, totalTx). The first call only establishes
+// the baseline and records nothing.
+func (s *directionSampler) sample(cur map[string]directionLanes, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	first := s.prev == nil
+	var deltas [directionLaneCount]uint64
+	for k, v := range cur {
+		p, ok := s.prev[k]
+		if !ok {
+			continue
+		}
+		// A counter that went down (a respawned proxy starts from zero) adds
+		// nothing for this tick; uint64 subtraction would wrap instead.
+		if v.billableRx >= p.billableRx {
+			deltas[dirBillableRx] += v.billableRx - p.billableRx
+		}
+		if v.billableTx >= p.billableTx {
+			deltas[dirBillableTx] += v.billableTx - p.billableTx
+		}
+		if v.totalRx >= p.totalRx {
+			deltas[dirTotalRx] += v.totalRx - p.totalRx
+		}
+		if v.totalTx >= p.totalTx {
+			deltas[dirTotalTx] += v.totalTx - p.totalTx
+		}
+		if v.packetRx >= p.packetRx {
+			deltas[dirPacketRx] += v.packetRx - p.packetRx
+		}
+		if v.packetTx >= p.packetTx {
+			deltas[dirPacketTx] += v.packetTx - p.packetTx
+		}
+	}
+	next := make(map[string]directionLanes, len(cur))
+	for k, v := range cur {
+		next[k] = v
+	}
+	elapsed := now.Sub(s.prevTime).Seconds()
+	s.prev = next
+	s.prevTime = now
+	if first {
+		return
+	}
+	for i := range deltas {
+		s.session[i] += deltas[i]
+	}
+	if elapsed < 1 {
+		elapsed = 1
+	}
+	for i := range deltas {
+		s.rings[i][s.next] = int64(float64(deltas[i]) / elapsed)
+	}
+	s.recorded++
+	s.next = (s.next + 1) % snapshotRingSize
+	if s.count < snapshotRingSize {
+		s.count++
+	}
+}
+
+// history returns the samples of lane oldest first. Never nil.
+func (s *directionSampler) history(lane int) []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]int64, s.count)
+	start := (s.next - s.count + snapshotRingSize) % snapshotRingSize
+	for i := 0; i < s.count; i++ {
+		out[i] = s.rings[lane][(start+i)%snapshotRingSize]
+	}
+	return out
+}
+
+// rates returns the newest sample and the averages over the last 60 and 300
+// samples of lane, or over however many exist yet.
+func (s *directionSampler) rates(lane int) (now, avg1m, avg5m int64) {
+	h := s.history(lane)
+	if len(h) == 0 {
+		return 0, 0, 0
+	}
+	return h[len(h)-1], avgTail(h, 60), avgTail(h, 300)
+}
+
+// direction builds one lane's figures from its history.
+func (s *directionSampler) direction(lane int, h []int64) SnapshotTrafficDirection {
+	if len(h) == 0 {
+		return SnapshotTrafficDirection{}
+	}
+	return SnapshotTrafficDirection{
+		NowBps:     h[len(h)-1],
+		Avg1mBps:   avgTail(h, 60),
+		Avg5mBps:   avgTail(h, 300),
+		HistoryBps: append([]int64(nil), h...),
+	}
+}
+
+// block builds the whole per-direction block from the current samples. It is
+// read under the caller's sample lock, same as the rate block.
+func (s *directionSampler) block() SnapshotTrafficDirections {
+	return SnapshotTrafficDirections{
+		BillableRx: s.direction(dirBillableRx, s.history(dirBillableRx)),
+		BillableTx: s.direction(dirBillableTx, s.history(dirBillableTx)),
+		TotalRx:    s.direction(dirTotalRx, s.history(dirTotalRx)),
+		TotalTx:    s.direction(dirTotalTx, s.history(dirTotalTx)),
+	}
+}
+
+func (s *directionSampler) packetRate(lane int) SnapshotPacketRate {
+	h := s.history(lane)
+	if len(h) == 0 {
+		return SnapshotPacketRate{}
+	}
+	return SnapshotPacketRate{NowPps: h[len(h)-1], Avg1mPps: avgTail(h, 60), Avg5mPps: avgTail(h, 300), HistoryPps: h}
+}
+
 // cumulativeSample is one reading of the monotonic counters behind the idle
 // hints.
 type cumulativeSample struct {
@@ -535,6 +837,10 @@ type snapshotSources struct {
 	// traffic maps proxy key to cumulative TOTAL bytes (rx+tx), like billable
 	// does for billable bytes. Nil means no total-traffic figures.
 	traffic func() map[string]uint64
+	// directions maps proxy key to its four cumulative directional counters. Nil
+	// means no per-direction figures.
+	directions     func() map[string]directionLanes
+	packetCounters bool
 	// lifetimeBillable reports the persisted lifetime billable total, false
 	// when the lifetime store is not running. Nil means not available.
 	lifetimeBillable func() (uint64, bool)
@@ -558,10 +864,11 @@ type nodeSnapshotCollector struct {
 	// from mu on purpose: a slow snapshot build must not stall the sampler, and
 	// this lock is held only for the samplers' own short reads and writes.
 	sampleMu sync.Mutex
+	dir      *directionSampler
 }
 
 func newNodeSnapshotCollector(src snapshotSources) *nodeSnapshotCollector {
-	return &nodeSnapshotCollector{src: src, rate: newRateSampler(), traffic: newRateSampler(), hist: &cumulativeHistory{}}
+	return &nodeSnapshotCollector{src: src, rate: newRateSampler(), traffic: newRateSampler(), dir: newDirectionSampler(), hist: &cumulativeHistory{}}
 }
 
 // tick takes one rate sample and, when due, one counter sample.
@@ -573,10 +880,17 @@ func (c *nodeSnapshotCollector) tick() {
 	if c.src.traffic != nil {
 		total = c.src.traffic()
 	}
+	var dirs map[string]directionLanes
+	if c.src.directions != nil {
+		dirs = c.src.directions()
+	}
 	c.sampleMu.Lock()
 	c.rate.sample(billable, now)
 	if c.src.traffic != nil {
 		c.traffic.sample(total, now)
+	}
+	if c.src.directions != nil {
+		c.dir.sample(dirs, now)
 	}
 	c.sampleMu.Unlock()
 	if c.hist.due(now) {
@@ -680,6 +994,13 @@ func (c *nodeSnapshotCollector) trafficSnapshot() *SnapshotTraffic {
 		TotalAvg5mBps:   avg5m,
 		TotalHistoryBps: c.traffic.history(),
 	}
+	if c.src.directions != nil {
+		d := c.dir.block()
+		tr.Directions = &d
+	}
+	if c.src.packetCounters && c.src.directions != nil {
+		tr.Packets = &SnapshotTrafficPackets{BillableRx: c.dir.packetRate(dirPacketRx), BillableTx: c.dir.packetRate(dirPacketTx)}
+	}
 	return tr
 }
 
@@ -735,55 +1056,83 @@ var nodeSnapshots = newNodeSnapshotCollector(productionSnapshotSources())
 // read, and reuses that read for ttl. Building the proxy snapshot is the costly
 // part (about 2ms and 35k allocations at 5000 proxies), and the billable and
 // total samplers tick together, so without this every tick would build it twice.
-// The maps are only read by the samplers, which copy what they keep.
+// The directional counters come off the same read, so all three samplers pay
+// for the pool walk once. The maps are only read by the samplers, which copy
+// what they keep.
 type bandwidthShare struct {
 	mu      sync.Mutex
 	now     func() time.Time
 	ttl     time.Duration
-	read    func() (billable, total map[string]uint64)
+	read    func() proxyBandwidthRead
 	at      time.Time
-	billed  map[string]uint64
-	moved   map[string]uint64
+	got     proxyBandwidthRead
 	fetched bool
 }
 
-func newBandwidthShare(now func() time.Time, ttl time.Duration, read func() (map[string]uint64, map[string]uint64)) *bandwidthShare {
+// proxyBandwidthRead is one proxy snapshot: billable and total per key, and the
+// four directional counters per key, all from the same read.
+type proxyBandwidthRead struct {
+	billable   map[string]uint64
+	total      map[string]uint64
+	directions map[string]directionLanes
+}
+
+func newBandwidthShare(now func() time.Time, ttl time.Duration, read func() proxyBandwidthRead) *bandwidthShare {
 	return &bandwidthShare{now: now, ttl: ttl, read: read}
 }
 
-func (s *bandwidthShare) get() (billable, total map[string]uint64) {
+func (s *bandwidthShare) get() (billable, total map[string]uint64, directions map[string]directionLanes) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if at := s.now(); !s.fetched || at.Sub(s.at) >= s.ttl {
-		s.billed, s.moved = s.read()
+		s.got = s.read()
 		s.at, s.fetched = at, true
 	}
-	return s.billed, s.moved
+	return s.got.billable, s.got.total, s.got.directions
 }
 
-// readProxyBandwidth reads both per-proxy counters from one proxy snapshot.
-func readProxyBandwidth() (billable, total map[string]uint64) {
-	if connect.ProxyHealthCount() == 0 {
-		return map[string]uint64{}, map[string]uint64{}
-	}
+// readProxyBandwidth reads all per-proxy counters from one proxy snapshot: billable,
+// total and the four directional lanes. The two sums are what ProxyBandwidthTotals
+// reports; the lanes are the per-direction split behind the live snapshot.
+func readProxyBandwidth() (billable, total map[string]uint64, directions map[string]directionLanes) {
 	_, _, _, bw, _ := connect.ProxyHealthSnapshot()
+	if len(bw) == 0 {
+		return map[string]uint64{}, map[string]uint64{}, map[string]directionLanes{}
+	}
 	billable = make(map[string]uint64, len(bw))
 	total = make(map[string]uint64, len(bw))
+	directions = make(map[string]directionLanes, len(bw))
 	for k, p := range bw {
 		billable[k] = p.BillableRx.Load() + p.BillableTx.Load()
 		total[k] = p.TotalRx.Load() + p.TotalTx.Load()
+		directions[k] = directionLanes{
+			billableRx: p.BillableRx.Load(),
+			billableTx: p.BillableTx.Load(),
+			totalRx:    p.TotalRx.Load(),
+			totalTx:    p.TotalTx.Load(),
+			packetRx:   p.BillableRxPackets.Load(),
+			packetTx:   p.BillableTxPackets.Load(),
+		}
 	}
-	return billable, total
+	return billable, total, directions
 }
 
 func productionSnapshotSources() snapshotSources {
-	bandwidth := newBandwidthShare(time.Now, 500*time.Millisecond, readProxyBandwidth)
+	bandwidth := newBandwidthShare(time.Now, 500*time.Millisecond, func() proxyBandwidthRead {
+		b, t, d := readProxyBandwidth()
+		return proxyBandwidthRead{billable: b, total: t, directions: d}
+	})
 	return snapshotSources{
-		now:       time.Now,
-		startedAt: providerStartTime,
+		packetCounters: true,
+		now:            time.Now,
+		startedAt:      providerStartTime,
 		billable: func() map[string]uint64 {
-			b, _ := bandwidth.get()
+			b, _, _ := bandwidth.get()
 			return b
+		},
+		directions: func() map[string]directionLanes {
+			_, _, d := bandwidth.get()
+			return d
 		},
 		pool: func() (SnapshotProxies, int64) {
 			held := trimHeldSnapshot()
@@ -838,7 +1187,7 @@ func productionSnapshotSources() snapshotSources {
 		},
 		startup: proxyStartupPhase,
 		traffic: func() map[string]uint64 {
-			_, t := bandwidth.get()
+			_, t, _ := bandwidth.get()
 			return t
 		},
 		lifetimeBillable: func() (uint64, bool) {

@@ -35,7 +35,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `hotswap` (`hot-swap`) | Zero-downtime in-process binary reload: hands live service to a verified candidate with no restart. Requires a `Type=notify` unit; see the deep-dive below. |
 | `self-update` (`selfupdate`) | Update the tool binary itself without touching running providers. |
 | `logs [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. The ramlog and file views use a native follower, so they work on Windows (no `tail` needed) and wherever `tail` is missing. It prints the last N lines and then follows. If the log is rotated or replaced it finishes the old file and follows the new one from its start, and a truncated log is followed from its start. |
-| `top [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool, memory and recent events. Read-only. Press `?` for keys, `q` to quit. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`). Press `+` or `-` to change the refresh interval down to 100 ms. At one second or faster, each live traffic reading adds a graph column. The title shows the duration of the visible columns; changing the interval keeps earlier columns. Longer intervals use one-second slots. The `1h` and `24h` views use binned snapshot history. Press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Drag panel dividers to resize them; `M` toggles mouse reporting. |
+| `top [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool, memory and recent events. Read-only. Press `?` for keys, `q` to quit. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`). Press `+` or `-` to change the refresh interval down to 100 ms. Every traffic reading goes on one time axis, and the graphs show a fixed time scale of 10s, 1m, 5m or 15m. Press `w` for the next scale and `W` for the previous one, and the footer names the scale on screen. Changing the interval keeps the readings already collected. Longer intervals use one-second slots. The `1h` and `24h` views use binned snapshot history. Press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Press `]` or `[` (or `PageDown`, `PageUp`, or a digit) to move between pages of graphs. Drag panel dividers to resize them; `K` switches between mouse mode and keyboard mode, and `--no-mouse` starts in keyboard mode. Press `c` to copy the screen to the clipboard while it runs. |
 | `extender [status|events|about|on|off|enable|disable|setup]` | Manage the extender role: `status` shows ports and relayed traffic; `events` reads recent gossip events (`--since`, `--kind`, `--json`); `about` explains ports and requirements; `setup` configures low-port bind privilege and firewall rules; `on`/`off` controls the role live without restart. |
 | `get [key] [target]` (alias `show`) | Read-only view of the runtime overrides. With no key it lists every active override; pass one key to see its value. Use `set` to change anything. |
 | `version` (`--version`, `-v`) | Print stamped binary version and build metadata. |
@@ -162,6 +162,133 @@ Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), hos
 
 ---
 
+## Pages
+
+`urnet-tools top` groups its graph screens into pages. Page 1 is the dashboard and it is what `top` opens. The strip under the title lists the pages the provider has data for, and the page on screen is marked:
+
+```
+[1 Overview] [2 Remote] [3 Billable] [4 Total] [5 Transports]
+```
+
+The strip is on by default on every page, page 1 included, so the pages are visible without switching to one. Press `p` to hide it or show it again. A hidden strip gives its row back to the graphs, and the footer keeps the `[/] page` and `p tabs` hints in both states. The choice lasts for the session only. A new `top` starts with the strip on.
+
+Press `]` or `[` to move to the next or previous page, or `PageDown` and `PageUp`. A number key goes straight to that page, and a click on a strip tab does the same. The page stays selected when you switch provider, and it is remembered for the session only.
+
+Page 1 keeps the dashboard's layout, and the rest of the frame is shared, so only the page's own draw function changes when you move to another page. A page with no data, such as Remote before the provider has answered, is left out of the strip unless it is the page you are on, which then shows its own waiting message.
+
+The strip needs the full layout, which is 72 columns by 20 rows. Below that `top` draws the compact single panel, which has no tabs and keeps every row for its graph.
+
+## Graph time scales
+
+The throughput graphs draw one fixed, round time span and fill the plot with it from the left edge to the right edge, whatever the terminal width and the refresh speed. Four scales are available:
+
+| Scale | Span |
+|---|---|
+| `10s` | 10 seconds |
+| `1m` | 1 minute |
+| `5m` | 5 minutes |
+| `15m` | 15 minutes |
+
+`1m` is the default. Press `w` to step to the next scale and `W` to step back, and both wrap around the table. The footer names the scale (`w zoom 1m`). Clicking the footer hint or the graph title steps to the next scale. The choice is saved in `top.conf` as `graph.window`, and a missing or unknown value falls back to the default, so an older file keeps working.
+
+The graphs keep the readings of the longest scale, one reading per traffic poll, which is 9000 readings at the 100 ms refresh and more than enough at the slower ones. When a scale holds more readings than the plot has columns, each column shows the highest reading in it, so a spike stays visible. When it holds fewer, each reading covers its own share of the columns, so the plot is a set of step bars and no reading is smoothed away.
+
+More columns than readings is the common case at the slower refresh speeds and the shorter scales. A scale whose readings do not reach the left edge yet says so in the title, for example `Billable, 15m (collecting 40s)`, and the data grows in from the right. The title switches to `Billable, 15m` when the readings cover the whole span.
+
+The Remote chart and the direction pages use the same scale. They read the one-second history, which holds about ten minutes, so the 15 minute scale is drawn there as the ten minutes the history carries.
+
+## Peak rates in the Now panel
+
+The Now panel keeps the highest rates `top` has seen since it started, for billable and for total traffic. Three rows appear under `moved` when the panel has the room for them:
+
+```
+peak/s    live    1m      5m
+bill      1.9M    41.0M   35.7M
+total     3.8M    82.0M   71.3M
+```
+
+`live` is the highest rate of a single traffic reading, in bytes per second. `1m` and `5m` are the highest of the provider's one and five minute averages. A one or five minute peak is recorded only once its window is full, 60 seconds and 300 seconds after `top` started, so a partial window early after start cannot set it. Until then the cell shows a dash. A peak never comes down.
+
+The block shows one number and one unit letter per cell, so three rates fit the narrow panel. The number follows the chosen unit base, so `u` switches it with the rows above. It is left out when the panel has no rows to spare, and nothing about it is stored: a new `top` starts with no peaks.
+
+## Billable and total by direction
+
+Two pages split the traffic figures into the two directions. Page 3 draws billable traffic and page 4 draws total traffic. Each page draws upload above the center line and download below it:
+
+- upload is the traffic the provider sent away from the client (`tx`).
+- download is the traffic it received toward the client (`rx`).
+
+The packet path in `ip.go` and the socket path in `net.go` count them the same way.
+
+Page 3 also draws the billable packet rate as a pink curve beside each byte curve, with the packet curve smaller and drawn under the byte curve so the bytes stay readable. The packet curve scales on its own peak, because a packet rate shares no unit with a byte rate. The corner then shows both figures per direction, bytes first, for example `1.77 KiB/s  42 pkt/s ▲`. The packet figure is muted while that direction carries no packets, and a direction with no packets at all draws no pink curve. The peak labels stay bytes. Page 4 has no packet curve: packets are counted for billable traffic only, and total traffic counts socket reads, which have no packet count.
+
+Both pages use the mirrored chart renderer, so the direction labels, the corner averages and the peak labels work as they do on the Remote page. Each half scales to its own peak, because upload is a fraction of download on most links.
+
+The pages are listed only when the provider reports the split. A provider that predates it keeps the overview and Remote pages and offers no direction page.
+
+## Billable packet data
+
+The live `traffic` reply includes `billable_rx_packets` and `billable_tx_packets`. The snapshot `traffic.packets` block contains `billable_rx` and `billable_tx` rates with `now_pps`, `avg_1m_pps`, `avg_5m_pps` and `history_pps`. Rx counts packets received by the provider and tx counts packets sent by it. These are billable IP packets only. Total socket traffic has no packet count. Counters reset on restart and may decrease when a proxy is removed. Snapshot sampling skips decreases. An older provider omits these fields.
+
+## Transports in the live traffic reply
+
+The provider's `traffic` reply carries a `transports` block beside the byte totals. Each kind has `bytes_tx`, `bytes_rx`, `frames_tx`, `frames_rx` and `up`, where `up` is the number of that kind's connections open now. The counters are cumulative like the byte totals, so a reader takes the difference of two readings to get a window.
+
+The kinds are `h1_websocket`, `h1_plus`, `h3`, `dns` and `dns_pump`. H1 is split into its two carriers, so a plain websocket and the authenticated framed upgrade appear as separate segments. The two H1 kinds are always present, and a provider with H1+ off reports zero for `h1_plus`. A kind the provider never ran is left out instead of sent as zeros.
+
+A provider that predates the block sends no `transports` at all. A reader then hides the transport view, the same way it hides the direction pages.
+
+## The Transports page
+
+Page 5 draws the share of the window's traffic that each transport carried, in the shape of the client app's transport bar. It appears once the provider has answered with a transport block, and it stays out of the strip on a provider that predates the block.
+
+```
+last 60s
+▌████████████████████████████████████████████████████████████████████████████▐
+
+● H3 60%   ● H1 30%   ● H1+ 9%   ● whodis 1%
+
+unused ○ whodis pump
+
+transport      share                                               rate  conns
+H3               60%                                          1.0 MiB/s
+H1               30%                                        512.0 KiB/s     20
+H1+               9%                                        153.6 KiB/s      5
+whodis            1%                                         17.1 KiB/s
+whodis pump   unused                                              0 B/s
+H1 connections: 25, of them 5 on the H1+ carrier (20%)
+```
+
+The window is 60 seconds, the same window the Remote page draws. The page keeps the transport counters from the traffic polls `top` already makes, and differences the newest reading against the newest one a window back. A session shorter than a window uses the oldest reading it has, so the bar is live from the second poll and the caption names the span it covers.
+
+The bar is one row across the content width. Each kind takes a run of cells in proportion to the bytes it carried, by the largest remainder, so the runs add up to exactly the bar width and every kind that carried traffic keeps at least one cell. The first and last cells are half blocks, which rounds the ends. H1 and H1+ are separate carriers and separate segments. The colors are green for H3, light blue for H1, the URnetwork blue for H1+, pink for WhoDis and yellow for its pump. The mono and ASCII themes draw the bar in `#` cells and use `*` and `o` for the markers.
+
+The legend gives the whole percent of each kind that carried traffic. Whole percents add up to exactly 100, and the largest remainder takes the spare point where one is needed. The footer lists every kind the provider runs that carried nothing, with a hollow marker, so a kind that sat out is not read as a zero share. A window with no traffic at all says `idle`, draws the bar as empty cells and lists every kind in the footer.
+
+The table repeats the window per kind, with the payload as a rate over the span, and the live connection gauge. Only the two H1 carriers report a gauge. The line under the table splits the live H1 connections over the two carriers, because one total would hide which carrier carries the traffic.
+
+A counter that went down, for example when a proxy is removed, is skipped instead of read as negative traffic, so that kind shows as unused for the window.
+
+## Remote transfer chart
+
+`urnet-tools top` can draw the client app's mirrored transfer chart under the throughput graphs. Press `r` to show or hide it. The panel needs a graph band tall enough for it and the two throughput graphs, so a short terminal leaves it out and a taller one brings it back, and the key keeps the choice.
+
+Billable traffic is drawn above a dim center line and total traffic below it. Each side scales to the peak in the window, so the peak reaches the edge of its half, and the peak value is labelled where it happened. The label slides sideways with the peak column and stays inside the plot. The corner shows the average of the newest five samples for each side, and the arrow is bright while that side carries traffic. Curves are smoothed through the samples and drawn with braille dots, with a faint fill under each curve. The mono and ASCII themes draw the same curves with characters. The scale eases over half a second, so a new peak grows into place instead of jumping. The two sides have a scale of their own because total traffic includes the billable part, and one shared height would flatten the billable curve.
+
+The provider reports billable and total bytes, but no separate upload and download counters and no packet counts. The panel therefore draws one curve per side and labels the sides `billable` and `total` instead of `up` and `down`. A provider that does not send the total figures gets `total not reported` in the footer and a billable curve above the line.
+
+## Color theme
+
+Press `m` and step the `Theme` row, or name a theme on the command line with `--theme <name>`. The row applies the theme to the screen behind the menu as you step, so the screen is the preview. The choice is saved in `~/.config/urnet-tools/top.conf` as `theme` and the next start uses it. `urnet-tools top --theme neon` saves the same way.
+
+The names are `default`, `nord`, `gruvbox`, `dracula`, `solarized-dark`, `tokyo-night`, `high-contrast`, `colorblind`, `neon` and `mono`. `default` follows the terminal's own palette and is the choice on a fresh install. `mono` is what `NO_COLOR` or a dumb terminal selects, and that environment choice outranks a saved one.
+
+`neon` is built from the URnetwork brand palette: green `#87FB67` for traffic, pale lime `#EFF7BB` for warnings, coral `#FF6F7A` for errors and packets, and blue `#007ACC` and `#0099FF` for IPv6 and H1+. It is drawn for a dark terminal. The theme carries its own approximation for a 256 color terminal and its own base 16 colors, so the accents keep their hue where the terminal cannot show truecolor.
+
+```bash
+urnet-tools top --theme neon
+```
+
 ## Heatmap style
 
 The Proxies panel shows a heatmap when the window has room. The count for the direct connection is separate from the proxy counts. Hover or click a cell to see its addresses, states and UDP check results (`ok`, `no UDP`, `mismatch`, `unknown` or `unchecked`). The direct connection appears as `direct (this host)`. The proxy address contains only the proxy host and port. When available, the popup also shows the cached TCP and UDP exit addresses and their IP families. The popup shows traffic since the previous sample, normally about one second, and lifetime billable and total traffic in each direction. Lifetime values resume from the saved per-proxy counters. A question mark means the value is unavailable. The counters cover accepted TCP and UDP traffic over IPv4 and IPv6, including the direct connection. Proxied UDP to IPv6 destinations is relayed only through proxies whose IPv6 check measured TCP and UDP with matching exit addresses. Other proxies refuse it at once.
@@ -186,6 +313,48 @@ The chosen style is saved in `~`/.config/urnet-tools/top.conf` (`proxy.heatmap_s
 If the panel is too small for a style (less than the minimum grid height), it falls back to the classic state‑bar display exactly as today.
 
 The style name appears in the legend row when the panel is wide enough; in narrow panels the help overlay (`?`) shows all six names.
+
+## Mouse and keyboard mode
+
+`urnet-tools top` runs the terminal in one of two modes. In mouse mode the terminal reports clicks, hover and the wheel to top, so a click on a footer hint, a page tab or a divider works. In keyboard mode that reporting is off, so the terminal keeps the mouse and its own text selection works with an ordinary drag.
+
+Press `K` to switch between the two. The footer hint names the mode the key would switch to, and the mode that is on is written at the right end of the same row. A one-line message at the bottom says what changed:
+
+```
+Keyboard Mode: select text with your terminal. K for Mouse Mode
+```
+
+`--no-mouse` starts top in keyboard mode. A terminal that cannot report the mouse, such as one with `TERM=dumb` or no `TERM` at all, also starts there, and `K` says why it stays. The old `M` key still switches the mode, but it is not listed in the footer, the help overlay or this page.
+
+Copying the screen with `c` works in either mode. The copy does not touch the terminal's mouse setting.
+
+## Copying the screen
+
+Press `c` to copy the screen that is on display. The copy is the same plain text that `--copy` writes when top exits: styles dropped, trailing spaces trimmed, box characters kept (and turned into `+ - |` with `--plain`). A one-line message at the bottom says what happened:
+
+```
+copied 40 lines with wl-copy
+sent 40 lines to the terminal clipboard (OSC 52)
+no clipboard here (xclip: exit status 1); saved 40 lines to ~/.local/state/urnet-tools/top-20260101-120000-1.txt
+```
+
+Three methods are tried in this order:
+
+1. **A local clipboard tool**, when the session is local (no `SSH_CONNECTION` and no `SSH_TTY`). The tool is `wl-copy` when `WAYLAND_DISPLAY` is set, `xclip -selection clipboard` or `xsel --clipboard --input` when `DISPLAY` is set, `clip.exe` on WSL, and `pbcopy` on macOS. The text goes on the tool's standard input, and a tool that is missing or fails passes to the next one.
+2. **OSC 52**, the escape sequence that asks the terminal to set the clipboard. It is the only way over SSH, and it is used when no local tool worked. It is wrapped for tmux (`$TMUX`) and for GNU screen (`$STY`). Some terminals need this feature enabled in their settings, and no terminal reports whether the clipboard took the text, so the message says `sent` rather than `copied`.
+3. **The `--copy` file**, `top-<time>.txt` under `~/.local/state/urnet-tools` (or `$XDG_STATE_HOME/urnet-tools`). The message names the path.
+
+The terminal payload stops at 64 KiB of text, cut between lines, because many terminals refuse a larger sequence. A screen is far smaller than that.
+
+A copy is a snapshot. It does not change the frame, the selected page, or the terminal's mouse mode.
+
+## The logo
+
+The URnetwork wordmark and icon are drawn as terminal block art in a few places: `urnet-tools --version`, the root help page (bare `urnet-tools` and `--help`), the help page of every subcommand, the full `status` view (the default view and `--detail`), and the welcome of the Linux installer.
+
+The logo is decoration. It never prints when stdout is not a terminal, and never with `--plain`, `--json`, `--json-summary` or `--brief`. Output that is read by a script stays byte for byte what it was. A terminal narrower than the artwork gets nothing, so a narrow window keeps its space for real output.
+
+Turn it off for one run with `--no-logo`, or for every run in a shell with `URNET_NO_LOGO=1`. Set `ui.logo = off` in `~/.config/urnet-tools/top.conf` to keep it off until the setting changes; the default is on. The installer welcomes an interactive install only: an unattended run (`-y`), a piped stdout and a terminal narrower than 82 columns print what they printed before.
 
 ## Docker top
 
