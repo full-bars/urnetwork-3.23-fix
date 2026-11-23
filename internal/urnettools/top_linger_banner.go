@@ -439,6 +439,15 @@ func (m *topModel) setLingerReading(r topLingerReading) {
 	m.linger = append(m.linger, r)
 }
 
+// applyLinger stores a finished read. A read that started before a fix carries
+// the old answer, so a revision that no longer matches is dropped.
+func (m *topModel) applyLinger(readings []topLingerReading, rev int) {
+	if rev != m.lingerRev {
+		return
+	}
+	m.linger = readings
+}
+
 // topLingerFirstLine is the first line of a command's error, which is what the
 // message has room for.
 func topLingerFirstLine(err error) string {

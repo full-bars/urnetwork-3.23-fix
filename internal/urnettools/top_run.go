@@ -251,6 +251,9 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		lingerBusy = true
 		lingerAt = m.now()
 		providers := append([]Provider(nil), m.providers...)
+		// The merge runs on the fetch goroutine, which must not read the
+		// model's own slice while the loop may write it.
+		previous := append([]topLingerReading(nil), m.linger...)
 		rev := m.lingerRev
 		go func() {
 			res := topResult{isLinger: true, lingerRev: rev}
@@ -263,7 +266,7 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				case <-ctx.Done():
 				}
 			}()
-			res.linger = collectTopLinger(providers, time.Now(), statusLingerApplicable, statusLingerCheckFn)
+			res.linger = collectTopLinger(providers, previous, time.Now(), statusLingerApplicable, statusLingerCheckFn)
 		}()
 	}
 
@@ -389,9 +392,7 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 			case r.isLinger:
 				lingerBusy = false
 				// A check that started before a fix carries the old answer.
-				if r.lingerRev == m.lingerRev {
-					m.linger = r.linger
-				}
+				m.applyLinger(r.linger, r.lingerRev)
 			case r.isProxyDetail:
 				detailBusy = false
 				m.applyProxyCellDetail(r.gen, r.proxyDetail, r.err)
