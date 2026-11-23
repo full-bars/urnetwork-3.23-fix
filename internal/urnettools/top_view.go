@@ -461,8 +461,12 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 		// A window is placed on a time axis of the plot's own width: readings
 		// become step bars when they are fewer than the columns, and the
 		// highest reading in each column wins when they are more.
+		span := sr.winSpan
+		if span <= 0 {
+			span = topGraphWindows[sr.level]
+		}
 		n := m.graphColumns(b.Width(), samples, scale)
-		samples = spreadSeries(sr.at, sr.spans, samples, sr.anchor, topGraphWindows[sr.level], n)
+		samples = spreadSeries(sr.at, sr.spans, samples, sr.anchor, span, n)
 		// The spread series is already one value per column on its own time
 		// axis. The graph must not bucket it again on an absolute index: the
 		// anchor here is a nanosecond time, which loses its precision as a

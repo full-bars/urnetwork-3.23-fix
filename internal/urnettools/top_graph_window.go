@@ -34,12 +34,53 @@ func topGraphWindowIndex(name string) (int, bool) {
 	return 0, false
 }
 
-// graphWindow is the span the selected level draws.
+// Continuous wheel zoom bounds and step factor. The upper bound matches the
+// longest preset because the ring trims readings beyond 15m.
+const (
+	topGraphWindowMin    = 5 * time.Second
+	topGraphWindowMax    = 15 * time.Minute
+	topGraphWindowFactor = 1.25
+)
+
+// graphWindow is the span the selected level or custom wheel zoom draws.
 func (m *topModel) graphWindow() time.Duration {
+	if m.winCustom > 0 {
+		return m.winCustom
+	}
 	if m.winLevel < 0 || m.winLevel >= len(topGraphWindows) {
 		return topGraphWindows[topGraphWindowDefault]
 	}
 	return topGraphWindows[m.winLevel]
+}
+
+// zoomGraphWindow adjusts the graph window continuously by one wheel notch:
+// dir > 0 zooms out (longer span), dir < 0 zooms in (shorter span).
+func (m *topModel) zoomGraphWindow(dir int) {
+	if dir == 0 {
+		return
+	}
+	cur := m.graphWindow().Seconds()
+	var nextSec float64
+	if dir > 0 {
+		nextSec = math.Round(cur * topGraphWindowFactor)
+	} else {
+		nextSec = math.Round(cur / topGraphWindowFactor)
+	}
+	next := time.Duration(nextSec) * time.Second
+	if next < topGraphWindowMin {
+		next = topGraphWindowMin
+	}
+	if next > topGraphWindowMax {
+		next = topGraphWindowMax
+	}
+	for i, d := range topGraphWindows {
+		if next == d {
+			m.winLevel = i
+			m.winCustom = 0
+			return
+		}
+	}
+	m.winCustom = next
 }
 
 // stepGraphWindow moves the level by d, wrapping around the table.

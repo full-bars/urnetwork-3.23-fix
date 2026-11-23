@@ -218,20 +218,23 @@ type topModel struct {
 	trafficBusy       bool
 	lastTraffic       time.Time
 
-	// winLevel selects the fixed graph window and winRing holds the readings it
-	// draws, one per traffic poll, trimmed to the longest window. peaks keeps
-	// the highest rates since start, and showPeaks says the Now panel had the
-	// rows for them this frame.
+	// winLevel selects the fixed graph window, winCustom overrides it when set
+	// by the mouse wheel, and winRing holds the readings it draws, one per
+	// traffic poll, trimmed to the longest window. peaks keeps the highest
+	// rates since start, and showPeaks says the Now panel had the rows for them
+	// this frame.
 	winLevel  int
+	winCustom time.Duration
 	winRing   topGraphRing
 	peaks     topPeaks
 	showPeaks bool
 
-	// The steady axis of each graph: one pair for the provider's own history
-	// and one per graph window, so a level change does not carry a scale.
-	scaleB, scaleT topScale
-	winScaleB      [len(topGraphWindows)]topScale
-	winScaleT      [len(topGraphWindows)]topScale
+	// The steady axis of each graph: one pair for the provider's own history,
+	// one per graph window preset, and one for a custom wheel-zoomed window.
+	scaleB, scaleT                   topScale
+	winScaleB                        [len(topGraphWindows)]topScale
+	winScaleT                        [len(topGraphWindows)]topScale
+	winCustomScaleB, winCustomScaleT topScale
 
 	// windowHours selects the history the graphs draw: 0 keeps the provider's
 	// ten minute ring, 1 shows the downsampled hour, 24 the day. windowB and
@@ -986,6 +989,8 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 		m.winScaleB[i].reset()
 		m.winScaleT[i].reset()
 	}
+	m.winCustomScaleB.reset()
+	m.winCustomScaleT.reset()
 	m.scaleB.reset()
 	m.scaleT.reset()
 	m.windowB.reset()
@@ -1107,6 +1112,7 @@ type topSeries struct {
 	window         bool
 	columns        bool
 	level          int
+	winSpan        time.Duration
 	covered        time.Duration
 	full           bool
 	at             []int64
@@ -1124,11 +1130,16 @@ func (m *topModel) series() topSeries {
 		if level < 0 || level >= len(topGraphWindows) {
 			level = topGraphWindowDefault
 		}
-		out.window, out.level = true, level
-		out.scaleB, out.scaleT = &m.winScaleB[level], &m.winScaleT[level]
+		span := m.graphWindow()
+		out.window, out.level, out.winSpan = true, level, span
+		if m.winCustom > 0 {
+			out.scaleB, out.scaleT = &m.winCustomScaleB, &m.winCustomScaleT
+		} else {
+			out.scaleB, out.scaleT = &m.winScaleB[level], &m.winScaleT[level]
+		}
 		out.at, out.spans = m.winRing.at, m.winRing.spans
 		out.anchor = m.winRing.at[len(m.winRing.at)-1]
-		out.covered, out.full = m.winRing.cover(topGraphWindows[level])
+		out.covered, out.full = m.winRing.cover(span)
 		out.billable = m.winRing.billable
 		if m.snap.Traffic != nil {
 			out.total = m.winRing.total

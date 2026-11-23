@@ -147,8 +147,27 @@ func (m *topModel) mouseClick(name string, ev tcellui.Event) topEffect {
 	return topNone
 }
 
-// mouseWheel scrolls the list the pointer is over.
+// isGraphRegion reports whether name is a graph region that responds to wheel zoom.
+func isGraphRegion(name string) bool {
+	switch name {
+	case "box:graph", "title:graph", "box:remote", "title:remote", "box:billable", "box:total":
+		return true
+	}
+	return false
+}
+
+// mouseWheel zooms the graph time window when the pointer is over a graph, or
+// scrolls the list the pointer is over.
 func (m *topModel) mouseWheel(name string, ev tcellui.Event) {
+	if isGraphRegion(name) {
+		switch ev.Button {
+		case tcellui.MouseWheelUp:
+			m.zoomGraphWindow(-1)
+		case tcellui.MouseWheelDown:
+			m.zoomGraphWindow(1)
+		}
+		return
+	}
 	dir := 1
 	if ev.Button == tcellui.MouseWheelUp {
 		dir = -1
