@@ -668,6 +668,11 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int,
 			prev = cv.base
 			continue
 		}
+		if x == 0 {
+			// The window cuts the history at the left edge: the curve starts
+			// there at its own height instead of rising from the baseline.
+			prev = y
+		}
 		if fill {
 			for k := 1; k < h; k++ {
 				yy := cv.base - k

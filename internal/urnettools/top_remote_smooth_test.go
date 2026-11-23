@@ -79,3 +79,24 @@ func TestRemoteSpikeTapers(t *testing.T) {
 		t.Fatalf("the burst tip is at dot row %d of %d:\n%s", top, maxH, b.String())
 	}
 }
+
+// A history that fills the window starts at the left edge at its own height.
+// It does not rise from the baseline in the first dot column, which would draw
+// a wall at the edge of the plot.
+func TestRemoteFullHistoryHasNoWallAtTheLeftEdge(t *testing.T) {
+	c := remoteTestChart(remoteFlat(120, 1<<20), nil)
+	b := tui.New(60, 15)
+	drawRemoteChart(b, c)
+	l := remoteLayout(60, 15)
+	grid := remoteDotGrid(b, l.upY, l.upRows+1, c.Dim)
+	maxH := l.upRows*4 + 1
+	run := 0
+	for y := 0; y < maxH; y++ {
+		if grid[y][0] {
+			run++
+		}
+	}
+	if run > 2 {
+		t.Fatalf("the first dot column carries %d curve dots:\n%s", run, b.String())
+	}
+}
