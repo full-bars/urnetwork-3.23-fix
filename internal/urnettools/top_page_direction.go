@@ -58,7 +58,7 @@ func (m *topModel) directionData(billable bool) (up, down []float64, pUp, pDown 
 		pp := m.snap.Traffic.Packets
 		pUp, pDown = pp.BillableTx.HistoryPps, pp.BillableRx.HistoryPps
 	}
-	return up, down, pUp, pDown, m.now().Truncate(interval), interval, true
+	return up, down, pUp, pDown, m.snapNewest(interval), interval, true
 }
 
 // billablePageAvailable offers the billable direction page when the provider

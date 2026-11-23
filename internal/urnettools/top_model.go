@@ -503,6 +503,7 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 					m.trafficHistory.pushSlot(lt.AtUnixNano, b, t)
 				}
 				m.trafficHistory.setDirs(dirs)
+				m.trafficHistory.arrived = m.now()
 				m.winRing.push(lt.AtUnixNano, time.Duration(lt.AtUnixNano-last), b, t)
 			}
 		}

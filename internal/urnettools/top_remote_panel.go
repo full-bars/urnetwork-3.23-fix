@@ -74,7 +74,7 @@ func (m *topModel) remoteData() (up, down []float64, newest time.Time, interval 
 		if s.Traffic == nil {
 			down = nil
 		}
-		return m.trafficHistory.billable, down, m.now().Truncate(time.Second), time.Second, true
+		return m.trafficHistory.billable, down, m.trafficNewest(time.Second), time.Second, true
 	}
 	up = s.Rate.HistoryBps
 	if len(up) == 0 {
@@ -83,7 +83,25 @@ func (m *topModel) remoteData() (up, down []float64, newest time.Time, interval 
 	if s.Traffic != nil {
 		down = s.Traffic.TotalHistoryBps
 	}
-	return up, down, m.now().Truncate(interval), interval, true
+	return up, down, m.snapNewest(interval), interval, true
+}
+
+// trafficNewest is the time of the newest reading in the client ring: when it
+// arrived. Before any reading it is the clock at draw time, to the second.
+func (m *topModel) trafficNewest(interval time.Duration) time.Time {
+	if a := m.trafficHistory.arrived; !a.IsZero() {
+		return a
+	}
+	return m.now().Truncate(interval)
+}
+
+// snapNewest is the time of the newest slot of the provider's own ring: when
+// the snapshot that carried it arrived.
+func (m *topModel) snapNewest(interval time.Duration) time.Time {
+	if !m.lastAnswer.IsZero() {
+		return m.lastAnswer
+	}
+	return m.now().Truncate(interval)
 }
 
 // remoteDirData is the client app's form of the chart: billable upload and
@@ -100,7 +118,7 @@ func (m *topModel) remoteDirData() (upB, downB, upP, downP []float64, newest tim
 		if !h.hasPackets() {
 			return nil, nil, nil, nil, time.Time{}, 0, false
 		}
-		return h.upBytes, h.downBytes, h.upPackets, h.downPackets, m.now().Truncate(time.Second), time.Second, true
+		return h.upBytes, h.downBytes, h.upPackets, h.downPackets, m.trafficNewest(time.Second), time.Second, true
 	}
 	if s.Traffic == nil || s.Traffic.Directions == nil || s.Traffic.Packets == nil {
 		return nil, nil, nil, nil, time.Time{}, 0, false
@@ -114,7 +132,7 @@ func (m *topModel) remoteDirData() (upB, downB, upP, downP []float64, newest tim
 	if s.Rate.HistoryIntervalSeconds > 0 {
 		interval = time.Duration(s.Rate.HistoryIntervalSeconds * float64(time.Second))
 	}
-	return upB, downB, upP, downP, m.now().Truncate(interval), interval, true
+	return upB, downB, upP, downP, m.snapNewest(interval), interval, true
 }
 
 // snapshotDirRates is the direction and packet reading of the snapshot that

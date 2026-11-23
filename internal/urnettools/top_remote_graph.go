@@ -28,6 +28,9 @@ import (
 const (
 	// remoteScaleEase is how long a scale takes to reach a new window peak.
 	remoteScaleEase = 500 * time.Millisecond
+	// remoteScaleMinWindow is the shortest stretch of history a scale looks
+	// at, however short the zoom.
+	remoteScaleMinWindow = time.Minute
 	// remoteScaleShrink is how far the window peak must fall below the scale
 	// before the scale follows it down.
 	remoteScaleShrink = 0.15
@@ -294,8 +297,14 @@ func remoteScales(c remoteChart) map[string]float64 {
 				// wider than it is one reading later, and a scale that
 				// followed it would swing and redraw the whole plot twice.
 				// The peak label still names the highest sample.
+				// A short zoom scales to the last minute at least. Ten
+				// readings of bursty traffic change their highest value
+				// almost every second, and the scale, and with it the whole
+				// plot, would follow.
 				peak = 0
-				for _, p := range remotePointsOf(c, s.Values, c.dots) {
+				wide := c
+				wide.Window = max(c.Window, remoteScaleMinWindow)
+				for _, p := range remotePointsOf(wide, s.Values, c.dots) {
 					peak = max(peak, p.v)
 				}
 			}

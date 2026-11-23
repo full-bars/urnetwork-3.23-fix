@@ -99,8 +99,13 @@ func seriesPeak(v []float64) float64 {
 type topTrafficHistory struct {
 	billable, total []float64
 	second          int64
-	spans           []time.Duration
-	seq             int64
+	// arrived is when the newest reading reached this client, on this
+	// machine's clock. The series is dated from it. A date taken from the
+	// clock at draw time would move the whole history by a second whenever a
+	// draw landed just before a reading.
+	arrived time.Time
+	spans   []time.Duration
+	seq     int64
 
 	upBytes, downBytes, upPackets, downPackets []float64
 	// dirPrev is the last reading of the direction counters, which the next
