@@ -160,3 +160,54 @@ func simText(sim tcell.SimulationScreen) string {
 	}
 	return string(out)
 }
+
+// queueTerminal models an input producer that cannot finish until PollEvent
+// drains its bounded queue.
+type queueTerminal struct {
+	tcell.Screen
+	q            chan tcell.Event
+	polled       chan struct{}
+	producerDone chan struct{}
+}
+
+func (f *queueTerminal) PollEvent() tcell.Event {
+	ev := <-f.q
+	select {
+	case f.polled <- struct{}{}:
+	default:
+	}
+	return ev
+}
+func (f *queueTerminal) PostEventWait(ev tcell.Event) { f.q <- ev }
+func (f *queueTerminal) Suspend() error               { <-f.producerDone; return nil }
+func (f *queueTerminal) Resume() error                { return nil }
+func (f *queueTerminal) Fini()                        { f.q <- nil; f.Screen.Fini() }
+
+func TestSuspendDrainsInputAndDiscardsQueuedEvents(t *testing.T) {
+	f := &queueTerminal{Screen: tcell.NewSimulationScreen("UTF-8"), q: make(chan tcell.Event, 2), polled: make(chan struct{}, 32), producerDone: make(chan struct{})}
+	scr, err := Wrap(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scr.Close()
+	go func() {
+		for i := 0; i < 25; i++ {
+			f.q <- tcell.NewEventKey(tcell.KeyRune, 'x', 0)
+		}
+		close(f.producerDone)
+	}()
+	for i := 0; i < 17; i++ {
+		<-f.polled
+	}
+	if err := scr.Suspend(); err != nil {
+		t.Fatal(err)
+	}
+	if err := scr.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ev := <-scr.Events():
+		t.Fatalf("queued event survived handoff: %+v", ev)
+	default:
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/urnetwork/connect/internal/tui"
@@ -137,11 +138,18 @@ type Screen interface {
 	Close()
 }
 
+type suspendDiscard struct{ ch chan struct{} }
+type suspendBarrier struct{ ack chan struct{} }
+
+func (*suspendBarrier) When() time.Time { return time.Time{} }
+
 type screen struct {
-	s      tcell.Screen
-	events chan Event
-	done   chan struct{}
-	once   sync.Once
+	discard  atomic.Pointer[suspendDiscard]
+	pumpDone chan struct{}
+	s        tcell.Screen
+	events   chan Event
+	done     chan struct{}
+	once     sync.Once
 	// raw is where a sequence outside the frame is written: the terminal the
 	// screen was opened on. It is nil for a wrapped simulation screen, which
 	// has no terminal to write to.
@@ -191,7 +199,8 @@ func Wrap(s tcell.Screen) (Screen, error) {
 		return nil, err
 	}
 	s.EnableMouse()
-	self := &screen{s: s, events: make(chan Event, 16), done: make(chan struct{})}
+	self := &screen{s: s, events: make(chan Event, 16), done: make(chan struct{}), pumpDone: make(chan struct{})}
+	self.discard.Store(&suspendDiscard{ch: make(chan struct{})})
 	go self.pump()
 	return self, nil
 }
@@ -233,11 +242,33 @@ func (self *screen) Suspend() error {
 	if self.suspended {
 		return nil
 	}
-	if err := self.s.Suspend(); err != nil {
-		return err
+	// Keep PollEvent moving while tcell stops its input goroutine.
+	close(self.discard.Load().ch)
+	err := self.s.Suspend()
+	// The marker follows all input queued before suspension. Once the pump
+	// reaches it, discard the adapter queue before allowing events again.
+	barrier := &suspendBarrier{ack: make(chan struct{})}
+	self.s.PostEventWait(barrier)
+	select {
+	case <-barrier.ack:
+	case <-self.pumpDone:
 	}
-	self.suspended = true
-	return nil
+	for {
+		select {
+		case _, ok := <-self.events:
+			if !ok {
+				self.discard.Store(&suspendDiscard{ch: make(chan struct{})})
+				return err
+			}
+		default:
+			self.discard.Store(&suspendDiscard{ch: make(chan struct{})})
+			if err != nil {
+				return err
+			}
+			self.suspended = true
+			return nil
+		}
+	}
 }
 
 // Resume takes the terminal back and reapplies the mouse setting that was in
@@ -339,12 +370,17 @@ func (self *screen) Draw(b *tui.Buffer) {
 // give up when Close runs so a reader that has stopped reading cannot pin the
 // goroutine.
 func (self *screen) pump() {
+	defer close(self.pumpDone)
 	defer close(self.events)
 	for {
 		ev := self.s.PollEvent()
 		if ev == nil {
 			self.send(Event{Kind: EventQuit})
 			return
+		}
+		if barrier, ok := ev.(*suspendBarrier); ok {
+			close(barrier.ack)
+			continue
 		}
 		out, ok := self.translate(ev)
 		if !ok {
@@ -357,7 +393,13 @@ func (self *screen) pump() {
 }
 
 func (self *screen) send(ev Event) bool {
+	var discard <-chan struct{}
+	if d := self.discard.Load(); d != nil {
+		discard = d.ch
+	}
 	select {
+	case <-discard:
+		return true
 	case self.events <- ev:
 		return true
 	case <-self.done:
