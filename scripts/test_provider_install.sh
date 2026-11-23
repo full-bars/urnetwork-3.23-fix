@@ -1159,6 +1159,16 @@ test_install_logo_columns() {
     assert_eq "82" "$(COLUMNS=82 install_logo_columns)" "the narrowest accepted width is reported"
     assert_eq "0" "$(COLUMNS=wide install_logo_columns)" "a non-numeric width reports 0"
 
+    # An interactive shell does not export COLUMNS, and the width is read in a
+    # command substitution where stdout is a pipe. The terminal itself has to
+    # answer, so the width must come from the terminal size when COLUMNS is
+    # unset.
+    install_logo_tty_size() { echo "40 120"; }
+    assert_eq "120" "$(unset COLUMNS; install_logo_columns)" "the terminal size gives the width when COLUMNS is unset"
+    install_logo_tty_size() { return 1; }
+    assert_eq "0" "$(unset COLUMNS; install_logo_columns)" "no terminal reports 0"
+    unset -f install_logo_tty_size
+
     # This suite runs without a terminal on stdout, so the artwork stays off
     # whatever the width says.
     local out
@@ -1169,7 +1179,7 @@ test_install_logo_columns() {
     # is offered to.
     local widest=0 line rows
     rows="$(mktemp)"
-    sed -n "/^install_logo ()$/,/^URNETWORK_WORDMARK$/p" scripts/Provider_Install_Linux.sh | sed -n '8,13p' > "$rows"
+    sed -n "/^install_logo ()$/,/^URNETWORK_WORDMARK$/p" scripts/Provider_Install_Linux.sh | sed -n "/<<'URNETWORK_WORDMARK'/,/^URNETWORK_WORDMARK$/p" | sed '1d;$d' | sed '/^$/d' > "$rows"
     while IFS= read -r line; do
         [ "${#line}" -gt "$widest" ] && widest="${#line}"
     done < "$rows"

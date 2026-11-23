@@ -19,6 +19,7 @@ func TestHandWrittenHelpPagesCarryTheLogo(t *testing.T) {
 	for name, show := range pages {
 		resetLogoFlag(t)
 		fakeLogoTerminal(t, 120, 40)
+		fakeLogoStderr(t, true, 120, 40)
 		fakeLogoPrefs(t, t.TempDir())
 		fakeLogoEnv(t, map[string]string{"TERM": "xterm-256color"})
 		with := captureStderr(t, show)
@@ -42,5 +43,49 @@ func TestLogoHelpKeepsThePageWhenOff(t *testing.T) {
 	page := "urnet-tools x — title\n\nUsage: urnet-tools x\n"
 	if got := logoHelp(page); got != page {
 		t.Fatalf("logoHelp changed the page with the logo off:\n%q", got)
+	}
+}
+
+// fakeLogoStderr stands in for the terminal behind stderr, where the
+// hand-written help pages are written.
+func fakeLogoStderr(t *testing.T, terminal bool, width, height int) {
+	t.Helper()
+	origTTY, origSize := logoStderrIsTerminal, logoStderrSize
+	t.Cleanup(func() { logoStderrIsTerminal, logoStderrSize = origTTY, origSize })
+	logoStderrIsTerminal = func() bool { return terminal }
+	logoStderrSize = func() (int, int, bool) { return width, height, terminal }
+}
+
+// A help page is written to stderr, so the icon follows stderr. Redirecting
+// stderr to a file keeps the artwork out of it even when stdout is a terminal,
+// and a terminal on stderr gets it even when stdout is redirected.
+func TestHandWrittenHelpFollowsStderr(t *testing.T) {
+	page := "urnet-tools x — title\n\nUsage: urnet-tools x\n"
+	for _, tc := range []struct {
+		name           string
+		stdout, stderr bool
+		want           bool
+	}{
+		{"stderr redirected, stdout a terminal", true, false, false},
+		{"stdout redirected, stderr a terminal", false, true, true},
+		{"both terminals", true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetLogoFlag(t)
+			origTTY, origSize := logoStdoutIsTerminal, logoStdoutSize
+			t.Cleanup(func() { logoStdoutIsTerminal, logoStdoutSize = origTTY, origSize })
+			logoStdoutIsTerminal = func() bool { return tc.stdout }
+			logoStdoutSize = func() (int, int, bool) { return 120, 40, tc.stdout }
+			fakeLogoStderr(t, tc.stderr, 120, 40)
+			fakeLogoPrefs(t, t.TempDir())
+			fakeLogoEnv(t, map[string]string{"TERM": "xterm-256color"})
+			got := logoHelp(page)
+			if has := strings.Contains(got, "▀"); has != tc.want {
+				t.Fatalf("icon present = %v, want %v:\n%s", has, tc.want, got)
+			}
+			if !tc.want && got != page {
+				t.Fatalf("the page changed without a terminal on stderr:\n%q", got)
+			}
+		})
 	}
 }

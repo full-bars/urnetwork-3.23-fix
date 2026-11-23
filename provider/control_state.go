@@ -124,6 +124,8 @@ var controlKeys = map[string]bool{
 	"pprof":                       true,
 	"smart_dialer":                true,
 	"h3":                          true,
+	"p2p_source_binding":          true,
+	"p2p_forged_source_drop":      true,
 	"h3_datagram":                 true,
 	"h3_datagram_send":            true,
 	"ip_version":                  true,

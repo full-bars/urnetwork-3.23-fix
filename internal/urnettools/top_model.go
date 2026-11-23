@@ -831,6 +831,12 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 		case '?':
 			m.help = !m.help
 		case 'A':
+			// About takes every mouse event, so a divider drag in progress would
+			// never see its release. End it here the way a release does.
+			if m.drag != nil {
+				m.saveLayout()
+			}
+			m.drag, m.lastPress = nil, topPress{}
 			m.about, m.help = true, false
 		case 'm':
 			m.menu, m.help, m.menuNote = true, false, ""
