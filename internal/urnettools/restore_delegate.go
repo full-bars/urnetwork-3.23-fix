@@ -48,7 +48,7 @@ func stripDryRunFlag(args []string) (bool, []string) {
 // the tool forcing an overwrite.
 func cmdAuth(args []string) error {
 	if hasHelpFlag(args) {
-		fmt.Fprint(os.Stderr, `urnet-tools auth — authenticate a provider
+		fmt.Fprint(os.Stderr, logoHelp(`urnet-tools auth — authenticate a provider
 
 Usage: urnet-tools auth [<auth-code>] [target]
 
@@ -58,7 +58,7 @@ overwritten only with -f (the provider otherwise prompts to confirm).
 
 Provider flags pass through (e.g. --api_url=...). See 'providers' to learn
 each provider's --unit/--user/--network.
-`)
+`))
 		return nil
 	}
 	dryRun, args := stripDryRunFlag(args)
@@ -86,7 +86,7 @@ each provider's --unit/--user/--network.
 // network).
 func cmdChooseNetwork(args []string) error {
 	if hasHelpFlag(args) {
-		fmt.Fprint(os.Stderr, `urnet-tools choose-network — set the network the provider connects to
+		fmt.Fprint(os.Stderr, logoHelp(`urnet-tools choose-network — set the network the provider connects to
 
 Usage: urnet-tools choose-network <api_url> <connect_url> [target]
        urnet-tools choose-network main|beta [target]
@@ -96,7 +96,7 @@ Saves an API URL (http/https) and connect URL (ws/wss) as the provider's
 chosen network. A preset name (main or beta) selects the built-in network
 without typing URLs. --reset clears the saved network and reverts to the main
 network. Delegates to the provider binary and streams its output.
-`)
+`))
 		return nil
 	}
 	dryRun, args := stripDryRunFlag(args)
@@ -291,7 +291,7 @@ func treatsOffAsClear(canonicalKey string) bool {
 }
 
 func printSetHelp() {
-	fmt.Fprint(os.Stderr, `urnet-tools set — runtime tuning overrides
+	fmt.Fprint(os.Stderr, logoHelp(`urnet-tools set — runtime tuning overrides
 
 Usage: urnet-tools set <key> [<value>|off] [target]
 
@@ -306,7 +306,7 @@ Clear it:     urnet-tools set <key> off (for keys that use off to clear)
 List all:     urnet-tools set
 
 Available keys:
-`)
+`))
 	for _, l := range setKeyHelps {
 		fmt.Fprintln(os.Stderr, l)
 	}

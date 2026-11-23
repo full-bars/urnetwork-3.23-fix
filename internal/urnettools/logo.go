@@ -191,3 +191,13 @@ func init() {
 	cobra.AddTemplateFunc("logoParagraph", logoParagraph)
 	cobra.AddTemplateFunc("logoTitle", logoTitle)
 }
+
+// logoHelp is logoParagraph for a hand-written help page: the icon goes
+// beside the page's first paragraph and the rest follows unchanged.
+func logoHelp(page string) string {
+	head, rest, ok := strings.Cut(page, "\n\n")
+	if !ok {
+		return logoParagraph(page)
+	}
+	return logoParagraph(head) + "\n\n" + rest
+}
