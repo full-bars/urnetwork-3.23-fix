@@ -52,6 +52,18 @@ type NodeTransportStats struct {
 	H1FramesRx uint64 `json:"h1_frames_rx"`
 	H1BytesTx  uint64 `json:"h1_bytes_tx"`
 	H1BytesRx  uint64 `json:"h1_bytes_rx"`
+
+	// H1WebSocket and H1Plus are the two H1 carriers, beside the H1 total
+	// above, which is their sum.
+	H1WebSocketFramesTx uint64 `json:"h1_websocket_frames_tx"`
+	H1WebSocketFramesRx uint64 `json:"h1_websocket_frames_rx"`
+	H1WebSocketBytesTx  uint64 `json:"h1_websocket_bytes_tx"`
+	H1WebSocketBytesRx  uint64 `json:"h1_websocket_bytes_rx"`
+	H1PlusFramesTx      uint64 `json:"h1_plus_frames_tx"`
+	H1PlusFramesRx      uint64 `json:"h1_plus_frames_rx"`
+	H1PlusBytesTx       uint64 `json:"h1_plus_bytes_tx"`
+	H1PlusBytesRx       uint64 `json:"h1_plus_bytes_rx"`
+
 	H3FramesTx uint64 `json:"h3_frames_tx"`
 	H3FramesRx uint64 `json:"h3_frames_rx"`
 	H3BytesTx  uint64 `json:"h3_bytes_tx"`

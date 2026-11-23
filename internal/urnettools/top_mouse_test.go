@@ -39,23 +39,23 @@ func mouseModel(t *testing.T, w, h int) (*topModel, *tui.Buffer) {
 func TestTopDividerDragResizesTheBoxes(t *testing.T) {
 	m, b := mouseModel(t, 120, 40)
 	graph := regionRect(t, m, "box:graph")
-	if graph.H != 29 {
-		t.Fatalf("default graph height = %d, want 29", graph.H)
+	if graph.H != 28 {
+		t.Fatalf("default graph height = %d, want 28", graph.H)
 	}
 	// Drag the graph|Proxies divider up five rows.
 	d := regionRect(t, m, "left:proxies")
 	m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, d.X+5, d.Y))
 	m.handle(mouseEv(tcellui.MouseDrag, tcellui.MouseLeft, d.X+5, d.Y-5))
 	m.handle(mouseEv(tcellui.MouseRelease, tcellui.MouseLeft, d.X+5, d.Y-5))
-	if m.layout.Dividers["left:proxies"] != 24 {
-		t.Fatalf("divider row = %d, want 24", m.layout.Dividers["left:proxies"])
+	if m.layout.Dividers["left:proxies"] != 23 {
+		t.Fatalf("divider row = %d, want 23", m.layout.Dividers["left:proxies"])
 	}
 	m.render(b)
 	graph = regionRect(t, m, "box:graph")
 	proxies := regionRect(t, m, "box:proxies")
 	events := regionRect(t, m, "box:events")
-	if graph.H != 24 || proxies.H != 11 || events.H != 3 {
-		t.Fatalf("after drag: graph %d, proxies %d, events %d; want 24 11 3", graph.H, proxies.H, events.H)
+	if graph.H != 23 || proxies.H != 11 || events.H != 3 {
+		t.Fatalf("after drag: graph %d, proxies %d, events %d; want 23 11 3", graph.H, proxies.H, events.H)
 	}
 }
 

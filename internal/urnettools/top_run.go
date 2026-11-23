@@ -315,8 +315,13 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 			if move {
 				before = m.hoverSignature()
 			}
-			if m.handle(ev) == topQuit {
+			// A copy reads the frame the loop last drew, so the buffer stays
+			// owned by this goroutine and nothing races the renderer.
+			switch m.handle(ev) {
+			case topQuit:
 				return nil
+			case topCopy:
+				m.copyFrame(buf)
 			}
 			if !move || m.hoverSignature() != before {
 				dirty = true

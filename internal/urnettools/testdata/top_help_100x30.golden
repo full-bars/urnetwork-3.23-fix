@@ -1,30 +1,30 @@
- urnet-tools top   tornado   v3.23.0-fix.32.1   up 3d 4h                        FLOWING    16:04:31
-╭ Billable, 10m ─────────────────────────────────────────────────────╮╭ Now ───────────────────────╮
-│40 MiB/s┤                                                           ││billable  38.2 MiB/s        │
-│       ╭ Keys ───────────────────────────────────────────────────────────────────────────╮        │
-│       │ q, Esc, Ctrl-C   quit                                                           │        │
-│20 MiB/│ Tab, Shift-Tab   next or previous provider                                      │        │
-│       │ +  -             change refresh interval, down to 100ms                         │        │
+ urnet-t╭ Keys ───────────────────────────────────────────────────────────────────────────╮16:04:31
+ [1 Over│ q, Esc, Ctrl-C   quit                                                           │
+╭ Billab│ Tab, Shift-Tab   next or previous provider                                      │────────╮
+│40 MiB/│ ]  [             next or previous page                                          │        │
+│       │ 1 - 9            go to a page                                                   │        │
+│       │ p                show or hide the page tabs                                     │        │
+│20 MiB/│ +  -             change refresh interval, down to 100ms                         │        │
 │       │ w                zoom the graphs to the last 15 seconds                         │        │
+│       │ r                show or hide the mirrored Remote transfer chart                │        │
 │   0 B/│ u                switch units between GiB (binary) and GB (decimal)             │        │
 ╰───────│ m                menu: color theme, graph style and heatmap style               │        │
-╭ Total │ M                mouse on/off (Shift+drag selects text in most terminals)       │        │
-│60 MiB/│ t                cycle graph history: 10m, 1h, 24h                              │12 cl   │
-│       │ o                show all providers                                             │░░░ 0.21│
-│       │ a / i / v        alerts / resource gauges / carriers                            │        │
-│30 MiB/│ g                list where goroutines are parked                               │        │
-│       │ billed, moved    billable and total bytes this session                          │        │
-│       │ ?                show or hide this help                                         │────────╯
-│       │ Grid state: up green, dropped yellow, connecting blue, dead red.                │────────╮
-│   0 B/│ Parked is dim. Green brightness is throughput.                                  │/4.0 GiB│
-╰───────│ A bright dot fades after recent traffic. proxy.afterglow_seconds sets the time. │10/65536│
-╭ Proxie│ One dot is one proxy. A cell has upper and lower dots.                          │        │
-│up     │ Groups show the worst state. Hover or click for addresses.                      │        │
-│dropped│ Mono uses blocks. Colorblind uses blocks and the worst state style.             │────────╯
-│connect│ Colorblind uses bold and dim. Hover for each state.                             │
-│dead   │ ASCII uses symbols for state and activity.                                      │
-╰───────│ Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.                │
-╭ Events╰─────────────────────────────────────────────────────────────────────────────────╯
-│3d ago • restart: update (v3.23.0-fix.32.0 to v3.23.0-fix.32.1)     │
-╰────────────────────────────────────────────────────────────────────╯
- q quit   ? help   m menu   w zoom   - 1s +   M mouse on
+╭ Total │ K                mouse mode, or keyboard mode to select text                    │        │
+│60 MiB/│ c                copy the screen to the clipboard                               │12 cl   │
+│       │ t                cycle graph history: 10m, 1h, 24h                              │░░░ 0.21│
+│       │ o                show all providers                                             │        │
+│30 MiB/│ a / i / v        alerts / resource gauges / carriers                            │        │
+│       │ g                list where goroutines are parked                               │        │
+│       │ billed, moved    billable and total bytes this session                          │────────╯
+│   0 B/│ ?                show or hide this help                                         │────────╮
+╰───────│ Grid state: up green, dropped yellow, connecting blue, dead red.                │/4.0 GiB│
+╭ Proxie│ Parked is dim. Green brightness is throughput.                                  │10/65536│
+│up     │ A bright dot fades after recent traffic. proxy.afterglow_seconds sets the time. │        │
+│dropped│ One dot is one proxy. A cell has upper and lower dots.                          │        │
+│connect│ Groups show the worst state. Hover or click for addresses.                      │────────╯
+│dead   │ Mono uses blocks. Colorblind uses blocks and the worst state style.             │
+╰───────│ Colorblind uses bold and dim. Hover for each state.                             │
+╭ Events│ ASCII uses symbols for state and activity.                                      │
+│3d ago │ Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.                │
+╰───────│ The page tabs need a 20 row terminal. Smaller screens keep the compact view.    │
+ q quit ╰─────────────────────────────────────────────────────────────────────────────────╯   mouse

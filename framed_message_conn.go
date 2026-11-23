@@ -156,6 +156,12 @@ func (c *FramedMessageConn) readPooledMessage(limit int64) (int, []byte, error) 
 		MessagePoolReturn(message)
 		return kind, nil, err
 	}
+	// Every framed read funnels through here, so one count per message covers
+	// the pooled, unpooled and H1 helper paths without a branch on caller.
+	if c.stats != nil {
+		c.stats.rxMessages.Add(1)
+		c.stats.rxBytes.Add(uint64(len(message)))
+	}
 	return kind, message, nil
 }
 
@@ -250,6 +256,7 @@ func (c *FramedMessageConn) recordReadError(err error) {
 type H1PlusStats struct {
 	attempts, accepted, fallbacks, authFailures, handshakeNanos  atomic.Uint64
 	flushes, writes, messages, bytes, readErrors, writeErrors    atomic.Uint64
+	rxMessages, rxBytes                                          atomic.Uint64
 	fallbackRejected, fallbackInvalid, fallbackIO, fallbackProxy atomic.Uint64
 	webSocketSelected, handshakeFailures                         atomic.Uint64
 	handshakeFailuresTimeout, handshakeFailuresTls               atomic.Uint64
@@ -295,6 +302,12 @@ type H1PlusStatsSnapshot struct {
 	// bounded handshakes. Enables reading the average duration of failed
 	// handshakes beside avg_handshake.
 	HandshakeFailureNanos uint64
+
+	// RxMessages and RxBytes count the messages read on H1+ connections and
+	// their payload bytes. Bytes counts the write side, so the two directions
+	// are reported apart.
+	RxMessages uint64
+	RxBytes    uint64
 }
 
 func (s *H1PlusStats) Snapshot() H1PlusStatsSnapshot {
@@ -327,6 +340,8 @@ func (s *H1PlusStats) Snapshot() H1PlusStatsSnapshot {
 		HandshakeFailuresIO:              failureIO,
 		HandshakeFailuresOther:           failureOther,
 		HandshakeFailureNanos:            s.handshakeFailureNanos.Load(),
+		RxMessages:                       s.rxMessages.Load(),
+		RxBytes:                          s.rxBytes.Load(),
 	}
 }
 

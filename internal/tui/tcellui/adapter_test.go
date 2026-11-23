@@ -121,6 +121,8 @@ func TestKeyTranslation(t *testing.T) {
 		{tcell.KeyEsc, 0, 0, Event{Kind: EventKey, Key: KeyEsc}},
 		{tcell.KeyTab, 0, 0, Event{Kind: EventKey, Key: KeyTab}},
 		{tcell.KeyBacktab, 0, 0, Event{Kind: EventKey, Key: KeyBacktab}},
+		{tcell.KeyPgUp, 0, 0, Event{Kind: EventKey, Key: KeyPageUp}},
+		{tcell.KeyPgDn, 0, 0, Event{Kind: EventKey, Key: KeyPageDown}},
 		{tcell.KeyEnter, 0, 0, Event{Kind: EventKey, Key: KeyEnter}},
 		{tcell.KeyCtrlC, 0, 0, Event{Kind: EventKey, Key: KeyCtrlC}},
 		{tcell.KeyF5, 0, 0, Event{Kind: EventKey, Key: KeyOther}},

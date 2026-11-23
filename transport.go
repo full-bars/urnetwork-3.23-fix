@@ -2621,9 +2621,15 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			releaseExtenderIp := self.holdExtenderIp(dialExtenderIp)
 			releaseH1ConnectionStats := self.settings.H1ConnectionStats.connected(ws)
 			h1Progress := newH1PhysicalProgress(self.settings.ProgressObserver, clientId, ws)
+			// The carrier kind cannot change after the upgrade is settled, so
+			// the payload counter pair is picked here once per connection and
+			// each message costs one add on that pair, with no branch on kind.
+			h1Framed := false
 			if framed, ok := unobservedH1MessageConn(ws).(*FramedMessageConn); ok {
 				framed.progress = h1Progress
+				h1Framed = true
 			}
+			h1Carried := h1ModeStats.counters(h1Framed)
 			self.setRegistered(true)
 			// fork: the H1 connection is the proxy health signal (scout, reaper,
 			// grade governor) and the [health] proxies=N count; the auxiliary H3
@@ -2732,7 +2738,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 						return err
 					}
 					writeCounter.Add(1)
-					h1ModeStats.addTx(byteCount) // fork: per-mode carried bytes
+					h1Carried.addTx(byteCount) // fork: per-mode carried bytes
 					if self.settings.EnableH3 {
 						h1DirectStats.addTx(byteCount)
 					}
@@ -2748,7 +2754,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 					if framed, ok := unobservedH1MessageConn(ws).(*FramedMessageConn); ok {
 						framedOpen, framedErr := writeH1FramedReadyBatch(handleCtx, framed, send, ackPrioritySend, firstMessage, firstPriority, self.settings.WriteTimeout, func(byteCount int) {
 							writeCounter.Add(1)
-							h1ModeStats.addTx(byteCount) // fork: per-mode carried bytes
+							h1Carried.addTx(byteCount) // fork: per-mode carried bytes
 							if self.settings.EnableH3 {
 								h1DirectStats.addTx(byteCount)
 							}
@@ -3079,7 +3085,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 						}
 						if delivered {
 							readCounter.Add(1)
-							h1ModeStats.addRx(len(message)) // fork: per-mode carried bytes
+							h1Carried.addRx(len(message)) // fork: per-mode carried bytes
 							if self.settings.EnableH3 {
 								h1DirectStats.addRx(len(message))
 							}

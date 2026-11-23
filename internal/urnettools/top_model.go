@@ -247,6 +247,14 @@ type topModel struct {
 	proxyHeatmapStyle     heatmapStyle
 	proxyTimeline         []proxyTimelineSample
 	proxyTimelineGroups   int
+	// remote shows the mirrored transfer chart in the graph band (key r), and
+	// remoteScales holds the easing state of each of its scales by group.
+	remote       bool
+	remoteScales map[string]*remoteScale
+	// directionScales is the same easing state for the Billable and Total
+	// direction pages, keyed per page and direction so the two pages never
+	// share a height and neither eases against the other's peak.
+	directionScales map[string]*remoteScale
 	// proxyGridW and proxyGridH are the text-cell size of the drawn grid, used
 	// for hit testing. Set by drawProxyGrid each frame.
 	proxyGridW, proxyGridH int
@@ -271,9 +279,23 @@ type topModel struct {
 	menuSel      int
 	menuNote     string
 
-	// mouse controls terminal mouse reporting; M and --no-mouse toggle it off so
-	// unshifted drag selects text in the terminal.
+	// mouse is on in Mouse Mode, where the terminal reports clicks and hover to
+	// top, and off in Keyboard Mode, where the terminal keeps them so its own
+	// text selection works. K switches between the two (M is an alias) and
+	// --no-mouse starts in Keyboard Mode.
 	mouse bool
+	// mouseSupported is false for a terminal that cannot report the mouse, so
+	// K can say why it changed nothing instead of doing it silently.
+	mouseSupported bool
+
+	// notice is a one-line message shown in place of the footer hints for a
+	// few seconds, and noticeUntil is when it gives the row back.
+	notice      string
+	noticeUntil time.Time
+
+	// clip sends the screen to the clipboard for the c key. It is nil when top
+	// has no terminal to copy from, and c is not offered then.
+	clip *topClipboard
 
 	// regions is the hit map for the last frame, rebuilt by every render.
 	regions []topRegion
@@ -291,6 +313,15 @@ type topModel struct {
 	contentRect                 tui.Rect
 	nowRows, resRows, extRows   int
 	showExtender, withInternals bool
+	// page is the selected page's index in topPages. It belongs to the session,
+	// not to a provider, so switching provider keeps the page.
+	page int
+	// stripHidden is set by the p key: the page strip is drawn by default and
+	// this hides it for the rest of the session. It is not saved anywhere.
+	stripHidden bool
+	// compact records that the last frame was the single-panel view, where the
+	// page keys do nothing.
+	compact bool
 	// gorScroll is the wheel offset of the goroutine list.
 	gorScroll int
 	gorHeight int
@@ -310,7 +341,7 @@ func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.T
 	if cur < 0 || cur >= len(providers) {
 		cur = 0
 	}
-	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true}
+	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true, mouseSupported: true}
 	m.providerSnaps = make([]*NodeSnapshot, len(providers))
 	m.providerExt = make([]ExtenderReading, len(providers))
 	m.rt.reset()
@@ -652,10 +683,17 @@ const (
 	// topRefetch means the selection changed and the new provider should be
 	// asked at once.
 	topRefetch
+	// topCopy means the loop should send the frame it last drew to the
+	// clipboard. The loop owns the buffer, so the key only asks for it.
+	topCopy
 )
 
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
+	// Whether this event may switch pages is decided before the event closes
+	// anything: the key or click that dismisses a popup must not also jump to
+	// another page.
+	pageKeys := m.pageKeysActive()
 	if ev.Kind == tcellui.EventKey || ev.Kind == tcellui.EventRune {
 		m.proxyPopup = false
 	}
@@ -719,6 +757,14 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			return m.selectProvider(1)
 		case tcellui.KeyBacktab:
 			return m.selectProvider(-1)
+		case tcellui.KeyPageDown:
+			if pageKeys {
+				m.stepPage(1)
+			}
+		case tcellui.KeyPageUp:
+			if pageKeys {
+				m.stepPage(-1)
+			}
 		}
 	case tcellui.EventRune:
 		switch ev.Rune {
@@ -729,8 +775,19 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.help = !m.help
 		case 'm':
 			m.menu, m.help, m.menuNote = true, false, ""
+		case 'K':
+			m.toggleMouseMode()
 		case 'M':
-			m.mouse = !m.mouse
+			// The old key, kept as a hidden alias of K so nobody loses the
+			// toggle. It is not in the footer, the help or the docs.
+			m.toggleMouseMode()
+		case 'c':
+			// The loop holds the frame, so the key only asks for the copy.
+			if m.clip == nil {
+				m.setNotice(topNoticeNoClipboard)
+				return topNone
+			}
+			return topCopy
 		case 't':
 			switch m.windowHours {
 			case 0:
@@ -757,6 +814,14 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.stepInterval(-1)
 		case 'w', 'W':
 			m.zoomOn = !m.zoomOn
+		case 'r', 'R':
+			// The Remote chart takes the bottom of the graph band. Switching it
+			// on starts its scales from the current window, not from whatever
+			// they eased to the last time it was shown.
+			m.remote = !m.remote
+			if m.remote {
+				m.remoteScales = nil
+			}
 		case 'u', 'U':
 			tui.SetDecimalUnits(!tui.DecimalUnits())
 		case 'g', 'G':
@@ -776,6 +841,27 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 					m.panel, m.rt.showing = "goroutines", true
 				}
 				m.rt.gLast = time.Time{}
+			}
+		case 'p', 'P':
+			// The page strip belongs to the page keys: a popup, the overview,
+			// the help or the menu keeps the key for itself, and the compact
+			// view has no strip to toggle.
+			if pageKeys {
+				m.togglePageStrip()
+			}
+		case ']':
+			if pageKeys {
+				m.stepPage(1)
+			}
+		case '[':
+			if pageKeys {
+				m.stepPage(-1)
+			}
+		default:
+			// 1 to 9 jump straight to a page, numbered as the strip numbers
+			// them.
+			if ev.Rune >= '1' && ev.Rune <= '9' && pageKeys {
+				m.selectPage(int(ev.Rune - '1'))
 			}
 		}
 	}
@@ -825,6 +911,8 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.windowT.reset()
 	m.windowScaleB.reset()
 	m.windowScaleT.reset()
+	m.remoteScales = nil
+	m.directionScales = nil
 	showing := m.rt.showing
 	m.rt.reset()
 	m.rt.showing = showing // the view choice is the user's, not the provider's

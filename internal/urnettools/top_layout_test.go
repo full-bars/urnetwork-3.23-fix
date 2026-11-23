@@ -105,8 +105,10 @@ func TestTopGraphsGrowIntoReclaimedRows(t *testing.T) {
 		m.addEvent(topBase, "only event", topInfo)
 	}
 	hb, hs := height(big), height(small)
-	if hs != hb+3 && hs != hb+2 && hs != hb+4 {
-		t.Fatalf("graph interior %d rows with bars, %d with the one-line pool; the freed 3 rows should go to the two graphs", hb, hs)
+	// The two graphs share the freed rows, so rounding can leave one of them
+	// with a single extra row. Nothing may stay blank.
+	if hs < hb+1 || hs > hb+4 {
+		t.Fatalf("graph interior %d rows with bars, %d with the one-line pool; the freed rows should go to the graphs", hb, hs)
 	}
 }
 

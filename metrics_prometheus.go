@@ -116,6 +116,10 @@ func PrometheusHandler() http.Handler {
 		fmt.Fprintf(&b, "# TYPE urnet_transport_frames_total counter\n")
 		fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"h1\",dir=\"tx\"} %d\n", modeStats.H1FramesTx)
 		fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"h1\",dir=\"rx\"} %d\n", modeStats.H1FramesRx)
+		fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"h1_websocket\",dir=\"tx\"} %d\n", modeStats.H1WebSocketFramesTx)
+		fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"h1_websocket\",dir=\"rx\"} %d\n", modeStats.H1WebSocketFramesRx)
+		fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"h1_plus\",dir=\"tx\"} %d\n", modeStats.H1PlusFramesTx)
+		fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"h1_plus\",dir=\"rx\"} %d\n", modeStats.H1PlusFramesRx)
 		fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"h3\",dir=\"tx\"} %d\n", modeStats.H3FramesTx)
 		fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"h3\",dir=\"rx\"} %d\n", modeStats.H3FramesRx)
 		for _, pt := range []struct {
@@ -129,6 +133,10 @@ func PrometheusHandler() http.Handler {
 		fmt.Fprintf(&b, "# TYPE urnet_transport_payload_bytes_total counter\n")
 		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h1\",dir=\"tx\"} %d\n", modeStats.H1BytesTx)
 		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h1\",dir=\"rx\"} %d\n", modeStats.H1BytesRx)
+		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h1_websocket\",dir=\"tx\"} %d\n", modeStats.H1WebSocketBytesTx)
+		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h1_websocket\",dir=\"rx\"} %d\n", modeStats.H1WebSocketBytesRx)
+		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h1_plus\",dir=\"tx\"} %d\n", modeStats.H1PlusBytesTx)
+		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h1_plus\",dir=\"rx\"} %d\n", modeStats.H1PlusBytesRx)
 		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h3\",dir=\"tx\"} %d\n", modeStats.H3BytesTx)
 		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h3\",dir=\"rx\"} %d\n", modeStats.H3BytesRx)
 		for _, pt := range []struct {

@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/urnetwork/connect/internal/tui"
@@ -101,7 +102,15 @@ func (m *topModel) mouseHandle(ev tcellui.Event) topEffect {
 
 // mouseClick dispatches a click on a clickable region.
 func (m *topModel) mouseClick(name string, ev tcellui.Event) topEffect {
+	if id, ok := strings.CutPrefix(name, "page:"); ok {
+		m.selectPageID(id)
+		return topNone
+	}
 	switch name {
+	case "footer:pages":
+		m.stepPage(1)
+	case "footer:tabs":
+		m.togglePageStrip()
 	case "footer:quit":
 		m.quit = true
 		return topQuit
@@ -131,8 +140,8 @@ func (m *topModel) mouseClick(name string, ev tcellui.Event) topEffect {
 				break
 			}
 		}
-	case "footer:mouse":
-		m.mouse = !m.mouse
+	case "footer:mode":
+		m.toggleMouseMode()
 	}
 	return topNone
 }

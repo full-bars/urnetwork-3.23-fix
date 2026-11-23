@@ -84,7 +84,10 @@ func cmdTop(args []string) error {
 	defer stop()
 	th := tui.ThemeFromEnv(os.Getenv)
 	m := newTopModel(providers, cur, interval, th, time.Now)
-	if hasNoMouseFlag(args) {
+	// A terminal that cannot report the mouse starts in Keyboard Mode, where
+	// the terminal's own text selection works. --no-mouse asks for the same.
+	m.mouseSupported = topTerminalReportsMouse(os.Getenv)
+	if hasNoMouseFlag(args) || !m.mouseSupported {
 		m.mouse = false
 	}
 	// The environment's own choice (NO_COLOR, a dumb terminal) outranks a saved
@@ -93,6 +96,7 @@ func cmdTop(args []string) error {
 	m.settingsPath = topSettingsPath()
 	m.applySettings(loadTopSettings(m.settingsPath))
 	m.copyOnQuit, m.copyPlain = copyOnQuit, plain
+	m.clip = newTopClipboard(scr)
 	src := topSourceFn()
 	if demo {
 		src = newDemoTopSource(time.Now)

@@ -62,11 +62,16 @@ const (
 func (m *topModel) render(b *tui.Buffer) {
 	m.regions = m.regions[:0]
 	m.proxyGridW, m.proxyGridH = 0, 0
+	m.compact = false
 	if m.overview {
 		m.drawOverview(b)
+		m.drawNotice(b)
 		return
 	}
 	if !topMin.FitsRect(b.Rect()) {
+		// Below the full layout's minimum there is one compact panel and no
+		// strip, so the compact view stays on the dashboard.
+		m.compact = true
 		m.drawCompact(b)
 		if m.help {
 			m.drawHelp(b)
@@ -74,9 +79,10 @@ func (m *topModel) render(b *tui.Buffer) {
 		if m.menu {
 			m.drawMenu(b)
 		}
+		m.drawNotice(b)
 		return
 	}
-	m.drawFull(b)
+	m.drawFrame(b)
 	if m.proxyPopup {
 		m.drawProxyPopup(b)
 	}
@@ -89,34 +95,60 @@ func (m *topModel) render(b *tui.Buffer) {
 	if m.menu {
 		m.drawMenu(b)
 	}
+	m.drawNotice(b)
 }
 
-// topSideCols sizes the right column from the terminal width: 30 cells up to
-// 120 columns so narrow and standard screens keep their layout, then growing
-// by half the extra width up to topSideMaxWidth so wide terminals fit IPv6
-// addresses and longer values without cutting them.
-func topSideCols(width int) int {
-	if width <= 120 {
-		return topSideWidth
+// topFrameRows splits the full screen into the shared header, the page strip,
+// the page content and the shared footer, with the strip assumed.
+func topFrameRows(r tui.Rect) (header, strip, content, footer tui.Rect) {
+	rows := tui.SplitRows(r, tui.Fixed(1), tui.Fixed(topPageStripRows), tui.Flex(1), tui.Fixed(1))
+	return rows[0], rows[1], rows[2], rows[3]
+}
+
+// topFrameRowsOnePage splits the full screen when there is only the dashboard
+// to show: the content keeps the row the strip would have taken, which is the
+// frame exactly as it was before pages existed.
+func topFrameRowsOnePage(r tui.Rect) (header, content, footer tui.Rect) {
+	rows := tui.SplitRows(r, tui.Fixed(1), tui.Flex(1), tui.Fixed(1))
+	return rows[0], rows[1], rows[2]
+}
+
+// drawFrame draws the chrome every page shares and then the selected page
+// inside the content rectangle it leaves. The page strip takes a row of its
+// own on every page, page 1 included, so the pages are visible without
+// switching to one. p hides the row for the session and gives it back to the
+// content.
+func (m *topModel) drawFrame(b *tui.Buffer) {
+	header, strip, content, footer := topFrameRows(b.Rect())
+	pages, current := m.pageStrip(content)
+	showStrip := m.stripShown(b.Rect(), len(pages))
+	if !showStrip {
+		header, content, footer = topFrameRowsOnePage(b.Rect())
 	}
-	return min(topSideWidth+(width-120)/2, topSideMaxWidth)
-}
-
-func (m *topModel) drawFull(b *tui.Buffer) {
-	th := m.theme
-	rows := tui.SplitRows(b.Rect(), tui.Fixed(1), tui.Flex(1), tui.Fixed(1))
-	m.drawHeader(b.Sub(rows[0]))
-	m.drawFooter(b.Sub(rows[2]))
-	// The footer hints are clickable: record one region per hint.
-	for _, r := range footerHintRects(rows[2], m.footerHints()) {
-		if r.Rect.W > 0 {
-			m.record(r.Name, r.Rect)
+	m.drawHeader(b.Sub(header))
+	if showStrip {
+		m.drawPageStrip(strip, b, pages, current)
+	}
+	m.contentRect = content
+	m.drawFooter(b.Sub(footer))
+	// The footer hints are clickable: record one region per hint that is on
+	// the row. While a message holds the row there are no hints to click.
+	for _, p := range footerHintPlaces(footer, m.footerHints()) {
+		if p.rect.W > 0 {
+			m.record(p.hint.name, p.rect)
 		}
 	}
+	m.selectedPage().draw(m, b, content)
+	// An operator hovering a divider sees it is draggable.
+	m.drawHover(b)
+}
 
-	m.contentRect = rows[1]
-	sideW := m.sideCols(rows[1].W)
-	cols := tui.SplitCols(rows[1], tui.Flex(1), tui.Fixed(sideW))
+// drawDashboard is page 1: the layout every earlier version of top drew. It
+// paints inside content and records its hit regions in absolute cells.
+func (m *topModel) drawDashboard(b *tui.Buffer, content tui.Rect) {
+	th := m.theme
+	sideW := m.sideCols(content.W)
+	cols := tui.SplitCols(content, tui.Flex(1), tui.Fixed(sideW))
 	left := m.splitLeft(cols[0])
 	nowRows := topNowRows
 	if m.hasTraffic() {
@@ -146,9 +178,13 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	}
 
 	sr := m.series()
+	// [remote chart] The Remote panel takes the bottom of the graph band when
+	// it is on and the band can hold both, so the rest of the layout is
+	// untouched. See top_remote_panel.go.
+	graphArea, remoteArea, showRemote := m.remoteSplit(left[0])
 	secondGraphTitle := -1
-	if sr.total != nil && left[0].H >= topTwoGraphsMinRows {
-		graphs := tui.SplitRows(left[0], tui.Flex(1), tui.Flex(1))
+	if sr.total != nil && graphArea.H >= topTwoGraphsMinRows {
+		graphs := tui.SplitRows(graphArea, tui.Flex(1), tui.Flex(1))
 		m.drawGraph(box(graphs[0], "graph", m.graphTitle("Billable", sr, sr.billable, sr.scaleB, graphs[0].W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
 		m.drawGraph(box(graphs[1], "graph", m.graphTitle("Total traffic", sr, sr.total, sr.scaleT, graphs[1].W-2)), sr, sr.total, sr.scaleT, sr.tailTotal, th.Accent)
 		secondGraphTitle = graphs[1].Y
@@ -157,7 +193,10 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 		if sr.total != nil {
 			title = "Billable"
 		}
-		m.drawGraph(box(left[0], "graph", m.graphTitle(title, sr, sr.billable, sr.scaleB, left[0].W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+		m.drawGraph(box(graphArea, "graph", m.graphTitle(title, sr, sr.billable, sr.scaleB, graphArea.W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+	}
+	if showRemote {
+		m.drawRemote(box(remoteArea, "remote", "Remote"))
 	}
 	m.drawProxies(box(left[1], "proxies", "Proxies"))
 	m.proxyPopupRect = tui.Rect{X: left[1].X + 1, Y: left[1].Y + 1, W: max(0, left[1].W-2), H: max(0, left[1].H-2)}
@@ -178,7 +217,10 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	}
 
 	// Hit regions: every box, its title row, and the dividers between them.
-	m.recordBox("graph", left[0])
+	m.recordBox("graph", graphArea)
+	if showRemote {
+		m.recordBox("remote", remoteArea)
+	}
 	if secondGraphTitle >= 0 {
 		m.record("title:graph", tui.Rect{X: left[0].X, Y: secondGraphTitle, W: left[0].W, H: 1})
 	}
@@ -193,7 +235,7 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 		m.recordBox("internals", side[internalsAt])
 	}
 	// The vertical divider between the main column and the side column.
-	m.record("side", tui.Rect{X: cols[1].X, Y: rows[1].Y, W: 1, H: rows[1].H})
+	m.record("side", tui.Rect{X: cols[1].X, Y: content.Y, W: 1, H: content.H})
 	// The horizontal dividers between the boxes of each column.
 	m.record("left:proxies", tui.Rect{X: left[0].X, Y: left[1].Y - 1, W: left[0].W, H: 1})
 	m.record("left:events", tui.Rect{X: left[0].X, Y: left[2].Y - 1, W: left[0].W, H: 1})
@@ -204,8 +246,17 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	if withInternals {
 		m.record("side:internals", tui.Rect{X: side[0].X, Y: side[internalsAt].Y - 1, W: side[0].W, H: 1})
 	}
-	// An operator hovering a divider sees it is draggable.
-	m.drawHover(b)
+}
+
+// topSideCols sizes the right column from the terminal width: 30 cells up to
+// 120 columns so narrow and standard screens keep their layout, then growing
+// by half the extra width up to topSideMaxWidth so wide terminals fit IPv6
+// addresses and longer values without cutting them.
+func topSideCols(width int) int {
+	if width <= 120 {
+		return topSideWidth
+	}
+	return min(topSideWidth+(width-120)/2, topSideMaxWidth)
 }
 
 // recordBox adds the box and title regions of one drawn panel.
@@ -252,16 +303,36 @@ func (m *topModel) drawHeader(h *tui.Buffer) {
 }
 
 func (m *topModel) drawFooter(f *tui.Buffer) {
-	hints := m.footerHints()
-	// The drawn line and the hit map come from the same list, so a click lands
-	// where the operator sees the label.
-	x := 1
-	for i, h := range hints {
-		if i > 0 {
-			x += 3 // the gap between hints
-		}
-		x = f.Put(h.label, x, 0, m.hoverStyle(h.name, m.theme.Dim))
+	// A one-line message holds the row while it lasts, so the message is
+	// never half a hint.
+	if m.noticeActive() {
+		return
 	}
+	places := footerHintPlaces(f.Rect(), m.footerHints())
+	end := 0
+	for _, p := range places {
+		f.Put(p.hint.label, p.rect.X, p.rect.Y, m.hoverStyle(p.hint.name, m.theme.Dim))
+		end = p.rect.X + p.rect.W
+	}
+	// The mode marker takes the right end of the row, and is dropped whole
+	// when it cannot sit clear of the last hint.
+	if label := m.modeMarker(); label != "" {
+		w := tui.StringWidth(label)
+		if sx := f.Width() - 1 - w; sx >= end+2 {
+			f.Put(label, sx, 0, m.theme.Dim)
+		}
+	}
+}
+
+// drawNotice draws the one-line message on the bottom row of b, in place of
+// the footer hints, whichever view is up.
+func (m *topModel) drawNotice(b *tui.Buffer) {
+	if !m.noticeActive() || b.Height() == 0 {
+		return
+	}
+	row := b.Sub(tui.Rect{Y: b.Height() - 1, W: b.Width(), H: 1})
+	row.Fill(row.Rect(), ' ', tui.Style{})
+	row.Put(tui.Truncate(" "+m.notice, row.Width(), m.theme.ASCII), 0, 0, m.theme.Accent)
 }
 
 // topIntervalText is 100ms, 250ms, 500ms, 1s, 2s.
@@ -1177,11 +1248,16 @@ func (m *topModel) drawCompact(b *tui.Buffer) {
 var helpLines = []string{
 	"q, Esc, Ctrl-C   quit",
 	"Tab, Shift-Tab   next or previous provider",
+	"]  [             next or previous page",
+	"1 - 9            go to a page",
+	"p                show or hide the page tabs",
 	"+  -             change refresh interval, down to 100ms",
 	"w                zoom the graphs to the last 15 seconds",
+	"r                show or hide the mirrored Remote transfer chart",
 	"u                switch units between GiB (binary) and GB (decimal)",
 	"m                menu: color theme, graph style and heatmap style",
-	"M                mouse on/off (Shift+drag selects text in most terminals)",
+	"K                mouse mode, or keyboard mode to select text",
+	"c                copy the screen to the clipboard",
 	"t                cycle graph history: 10m, 1h, 24h",
 	"o                show all providers",
 	"a / i / v        alerts / resource gauges / carriers",
@@ -1197,17 +1273,35 @@ var helpLines = []string{
 	"Colorblind uses bold and dim. Hover for each state.",
 	"ASCII uses symbols for state and activity.",
 	"Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.",
+	"The page tabs need a 20 row terminal. Smaller screens keep the compact view.",
+}
+
+// helpText is the key reference the ? overlay shows, less the copy line when
+// this view has no clipboard to copy to.
+func (m *topModel) helpText() []string {
+	if m.clip != nil {
+		return helpLines
+	}
+	out := make([]string, 0, len(helpLines))
+	for _, l := range helpLines {
+		if strings.HasPrefix(l, "c ") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 // drawHelp draws the key reference centered over whatever is on screen.
 func (m *topModel) drawHelp(b *tui.Buffer) {
+	lines := m.helpText()
 	th := m.theme
 	w := 0
-	for _, l := range helpLines {
+	for _, l := range lines {
 		w = max(w, tui.StringWidth(l))
 	}
 	w += 4
-	h := len(helpLines) + 2
+	h := len(lines) + 2
 	if b.Width() < topHelpMinWidth || b.Height() < h {
 		w, h = min(w, b.Width()), min(h, b.Height())
 	}
@@ -1215,7 +1309,7 @@ func (m *topModel) drawHelp(b *tui.Buffer) {
 	panel := b.Sub(r)
 	panel.Fill(panel.Rect(), ' ', tui.Style{})
 	in := tui.DrawBox(panel, "Keys", th.Frame, th.Border, th.Accent, th.ASCII)
-	for i, l := range helpLines {
+	for i, l := range lines {
 		in.Put(tui.Truncate(" "+l, in.Width(), th.ASCII), 0, i, tui.Style{})
 	}
 }

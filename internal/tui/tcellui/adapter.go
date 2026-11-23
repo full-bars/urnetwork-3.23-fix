@@ -8,6 +8,9 @@
 package tcellui
 
 import (
+	"errors"
+	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -82,6 +85,8 @@ const (
 	KeyDown
 	KeyLeft
 	KeyRight
+	KeyPageUp
+	KeyPageDown
 )
 
 // Event is the terminal input the screens understand.
@@ -110,6 +115,12 @@ type Screen interface {
 	// Events is the input stream. It ends (after an EventQuit) once the screen
 	// is closed.
 	Events() <-chan Event
+	// WriteTerminal writes p to the terminal outside the frame buffer, for an
+	// escape sequence that is not screen content such as an OSC 52 clipboard
+	// set. It takes the same lock as Draw and resyncs the screen afterwards, so
+	// a sequence written here never leaves the renderer's cursor or cells out
+	// of step.
+	WriteTerminal(p []byte) error
 	// Close restores the terminal. It is safe to call more than once and from
 	// any goroutine, including a panic path.
 	Close()
@@ -120,6 +131,10 @@ type screen struct {
 	events chan Event
 	done   chan struct{}
 	once   sync.Once
+	// raw is where a sequence outside the frame is written: the terminal the
+	// screen was opened on. It is nil for a wrapped simulation screen, which
+	// has no terminal to write to.
+	raw io.Writer
 	// mu serializes Draw, SetMouse and Close. tcell's screen state is not
 	// goroutine-safe: a Close (Fini) racing an in-flight Draw (Show/resize)
 	// is a data race (caught on TestTopLoopEndsWhenTheScreenGoesAway), so the
@@ -147,7 +162,12 @@ func Open() (Screen, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Wrap(s)
+	scr, err := Wrap(s)
+	if err != nil {
+		return nil, err
+	}
+	scr.(*screen).raw = os.Stdout
+	return scr, nil
 }
 
 // Wrap initializes s and returns it as a Screen. It exists so tests can pass a
@@ -189,6 +209,27 @@ func (self *screen) Close() {
 		close(self.done)
 		self.s.Fini()
 	})
+}
+
+// WriteTerminal writes p to the terminal under the drawing lock and resyncs the
+// screen, so a sequence that is not frame content leaves no cell behind it out
+// of date. A wrapped simulation screen has no terminal to write to and says so.
+func (self *screen) WriteTerminal(p []byte) error {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	select {
+	case <-self.done:
+		return errors.New("the screen is closed")
+	default:
+	}
+	if self.raw == nil {
+		return errors.New("no terminal to write to")
+	}
+	if _, err := self.raw.Write(p); err != nil {
+		return err
+	}
+	self.s.Sync()
+	return nil
 }
 
 // Draw copies the buffer cell by cell. tcell keeps its own back buffer and
@@ -347,6 +388,10 @@ func translateKey(ev *tcell.EventKey) Event {
 		return Event{Kind: EventKey, Key: KeyLeft}
 	case tcell.KeyRight:
 		return Event{Kind: EventKey, Key: KeyRight}
+	case tcell.KeyPgUp:
+		return Event{Kind: EventKey, Key: KeyPageUp}
+	case tcell.KeyPgDn:
+		return Event{Kind: EventKey, Key: KeyPageDown}
 	case tcell.KeyEnter:
 		return Event{Kind: EventKey, Key: KeyEnter}
 	case tcell.KeyCtrlC:

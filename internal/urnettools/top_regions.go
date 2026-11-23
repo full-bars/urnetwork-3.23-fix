@@ -34,13 +34,27 @@ type topFooterHint struct {
 }
 
 // footerHints returns the clickable hints at the bottom of the screen, in
-// draw order.
+// draw order. The mode hint comes early so a narrow terminal drops the zoom
+// and interval hints before it.
 func (m *topModel) footerHints() []topFooterHint {
 	hints := []topFooterHint{{"footer:quit", "q quit"}}
 	if len(m.providers) > 1 {
 		hints = append(hints, topFooterHint{"footer:provider", "tab provider"})
 	}
+	// The page hints are on every page with more than one to offer, whether the
+	// strip row is drawn or hidden: the hints are the way back to both the
+	// pages and the tabs.
+	if pages, _ := m.pageStrip(m.pageArea()); len(pages) > 1 {
+		hints = append(hints, topFooterHint{"footer:pages", "[/] page"}, topFooterHint{"footer:tabs", "p tabs"})
+	}
 	hints = append(hints, topFooterHint{"footer:help", "? help"}, topFooterHint{"footer:menu", "m menu"})
+	// The mode hint names the mode K would switch to; the marker at the right
+	// end of the row names the mode that is on.
+	if m.mouse {
+		hints = append(hints, topFooterHint{"footer:mode", topModeHintMouse})
+	} else {
+		hints = append(hints, topFooterHint{"footer:mode", topModeHintKeys})
+	}
 	if m.trafficOK {
 		hints = append(hints, topFooterHint{"footer:zoom", "w zoom"})
 	}
@@ -48,26 +62,42 @@ func (m *topModel) footerHints() []topFooterHint {
 		hints = append(hints, topFooterHint{"footer:goroutines", "g goroutines"})
 	}
 	hints = append(hints, topFooterHint{"footer:interval", "- " + topIntervalText(m.interval) + " +"})
-	mouse := "mouse off"
-	if m.mouse {
-		mouse = "mouse on"
-	}
-	hints = append(hints, topFooterHint{"footer:mouse", "M " + mouse})
 	return hints
 }
 
-// footerHintRects returns the rect of each footer hint in absolute terminal
-// cells. The hints start at column 1 with three spaces between them.
-func footerHintRects(f tui.Rect, hints []topFooterHint) []topRegion {
-	out := make([]topRegion, len(hints))
+// modeMarker names the mode the terminal is in, for the right end of the
+// footer row.
+func (m *topModel) modeMarker() string {
+	if m.mouse {
+		return topModeLabelMouse
+	}
+	return topModeLabelKeys
+}
+
+// footerHintPlace is one hint and where it lands on the footer row.
+type footerHintPlace struct {
+	hint topFooterHint
+	rect tui.Rect
+}
+
+// footerHintPlaces lays the hints out from column 1 with three spaces between
+// them and stops at the first one that does not fit whole, so a narrow
+// terminal loses whole hints instead of cutting one in half. The drawn row and
+// the clickable regions come from this one list, so a click lands where the
+// operator sees the label.
+func footerHintPlaces(f tui.Rect, hints []topFooterHint) []footerHintPlace {
+	out := make([]footerHintPlace, 0, len(hints))
 	x := 1
 	for i, h := range hints {
+		if i > 0 {
+			x += 3 // the gap between hints
+		}
 		w := tui.StringWidth(h.label)
-		if x >= f.W {
+		if x+w > f.W {
 			break
 		}
-		out[i] = topRegion{Name: h.name, Rect: tui.Rect{X: f.X + x, Y: f.Y, W: min(w, f.W-x), H: 1}}
-		x += w + 3
+		out = append(out, footerHintPlace{hint: h, rect: tui.Rect{X: f.X + x, Y: f.Y, W: w, H: 1}})
+		x += w
 	}
 	return out
 }

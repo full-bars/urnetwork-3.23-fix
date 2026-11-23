@@ -86,6 +86,17 @@ type NodeTransportStats struct {
 	H1FramesRx uint64 `json:"h1_frames_rx"`
 	H1BytesTx  uint64 `json:"h1_bytes_tx"`
 	H1BytesRx  uint64 `json:"h1_bytes_rx"`
+	// H1WebSocket and H1Plus are the two H1 carriers the split measures, beside
+	// the H1 total above, which is their sum.
+	H1WebSocketFramesTx uint64 `json:"h1_websocket_frames_tx"`
+	H1WebSocketFramesRx uint64 `json:"h1_websocket_frames_rx"`
+	H1WebSocketBytesTx  uint64 `json:"h1_websocket_bytes_tx"`
+	H1WebSocketBytesRx  uint64 `json:"h1_websocket_bytes_rx"`
+	H1PlusFramesTx      uint64 `json:"h1_plus_frames_tx"`
+	H1PlusFramesRx      uint64 `json:"h1_plus_frames_rx"`
+	H1PlusBytesTx       uint64 `json:"h1_plus_bytes_tx"`
+	H1PlusBytesRx       uint64 `json:"h1_plus_bytes_rx"`
+
 	H3FramesTx uint64 `json:"h3_frames_tx"`
 	H3FramesRx uint64 `json:"h3_frames_rx"`
 	H3BytesTx  uint64 `json:"h3_bytes_tx"`
@@ -153,26 +164,34 @@ func transportBlockOwed(stats connect.TransportModeStatsSnapshot) bool {
 // tested without touching the process-wide counters.
 func transportStatsFromSnapshot(stats connect.TransportModeStatsSnapshot) *NodeTransportStats {
 	return &NodeTransportStats{
-		H1FramesTx:        stats.H1FramesTx,
-		H1FramesRx:        stats.H1FramesRx,
-		H1BytesTx:         stats.H1BytesTx,
-		H1BytesRx:         stats.H1BytesRx,
-		H3FramesTx:        stats.H3FramesTx,
-		H3FramesRx:        stats.H3FramesRx,
-		H3BytesTx:         stats.H3BytesTx,
-		H3BytesRx:         stats.H3BytesRx,
-		H3Attempts:        stats.H3Attempts,
-		H3Connects:        stats.H3Connects,
-		H3ConnectFailures: stats.H3ConnectFailures,
-		H3Drops:           stats.H3Drops,
-		H3Up:              stats.H3Up,
-		H1DirectFramesTx:  stats.H1DirectFramesTx,
-		H1DirectFramesRx:  stats.H1DirectFramesRx,
-		H1DirectBytesTx:   stats.H1DirectBytesTx,
-		H1DirectBytesRx:   stats.H1DirectBytesRx,
-		Dns:               ptModeStatsFromSnapshot(stats.Dns),
-		DnsPump:           ptModeStatsFromSnapshot(stats.DnsPump),
-		H3TxSharePercent:  stats.H3TxSharePercent(),
+		H1FramesTx:          stats.H1FramesTx,
+		H1FramesRx:          stats.H1FramesRx,
+		H1BytesTx:           stats.H1BytesTx,
+		H1BytesRx:           stats.H1BytesRx,
+		H1WebSocketFramesTx: stats.H1WebSocketFramesTx,
+		H1WebSocketFramesRx: stats.H1WebSocketFramesRx,
+		H1WebSocketBytesTx:  stats.H1WebSocketBytesTx,
+		H1WebSocketBytesRx:  stats.H1WebSocketBytesRx,
+		H1PlusFramesTx:      stats.H1PlusFramesTx,
+		H1PlusFramesRx:      stats.H1PlusFramesRx,
+		H1PlusBytesTx:       stats.H1PlusBytesTx,
+		H1PlusBytesRx:       stats.H1PlusBytesRx,
+		H3FramesTx:          stats.H3FramesTx,
+		H3FramesRx:          stats.H3FramesRx,
+		H3BytesTx:           stats.H3BytesTx,
+		H3BytesRx:           stats.H3BytesRx,
+		H3Attempts:          stats.H3Attempts,
+		H3Connects:          stats.H3Connects,
+		H3ConnectFailures:   stats.H3ConnectFailures,
+		H3Drops:             stats.H3Drops,
+		H3Up:                stats.H3Up,
+		H1DirectFramesTx:    stats.H1DirectFramesTx,
+		H1DirectFramesRx:    stats.H1DirectFramesRx,
+		H1DirectBytesTx:     stats.H1DirectBytesTx,
+		H1DirectBytesRx:     stats.H1DirectBytesRx,
+		Dns:                 ptModeStatsFromSnapshot(stats.Dns),
+		DnsPump:             ptModeStatsFromSnapshot(stats.DnsPump),
+		H3TxSharePercent:    stats.H3TxSharePercent(),
 	}
 }
 

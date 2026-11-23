@@ -696,8 +696,9 @@ func TestTopInternalsDegradesWithoutTheTransportRows(t *testing.T) {
 	if !strings.Contains(tall, "h3      up 1") || !strings.Contains(tall, "h3/all") {
 		t.Fatalf("a tall box must draw the transport rows:\n%s", tall)
 	}
-	// 33 rows leaves the panel exactly topInternalsRows after Now and Resources.
-	short := withTransport(33)
+	// 34 rows leaves the panel exactly topInternalsRows after the strip, Now
+	// and Resources.
+	short := withTransport(34)
 	if !strings.Contains(short, "Internals") || !strings.Contains(short, "gor") {
 		t.Fatalf("the panel and its runtime figures must survive a box too short for the split:\n%s", short)
 	}

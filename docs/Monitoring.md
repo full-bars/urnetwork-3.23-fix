@@ -4,6 +4,10 @@ Every provider can serve Prometheus metrics at `/metrics`. The `monitoring/` bun
 
 It takes two steps: confirm metrics is on at each provider (it is on by default, and `urnet-tools metrics on` turns it back on after an `off`), then start the bundle on any machine that can reach them.
 
+## Billable packet metrics
+
+`urnet_billable_packets_total{dir="rx"}` and `urnet_billable_packets_total{dir="tx"}` count billable IP packets received and sent by the provider. They reset on restart and can decrease when a proxy is removed. These counts do not include all socket traffic.
+
 ## Extender discovery metrics
 
 `urnet_extender_discovery_state` is a gauge with one series for each bounded state: `off`, `waiting`, `running`, `feed-only` and `failed`. The active state is 1. `urnet_extender_discovery_peers` counts mesh peers and `urnet_extender_discovery_feed_subscribers` counts feed subscribers. `urnet_extender_carrier_requests_total{carrier=...,outcome=...}` counts served and refused requests for `tcp-443`, `udp-443`, `udp-4053` and `udp-53`. `urnet_extender_carrier_refused_total{carrier=...,stage=...}` splits refused requests by carrier and refusal stage.
@@ -256,8 +260,10 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_bytes_total` | counter | `direction` | All bytes, all proxies, persisted across restarts |
 | `urnet_clients_active` | gauge | | Active clients, all proxies |
 | `urnet_connections_active` | gauge | | Active connections |
-| `urnet_transport_frames_total` | counter | `mode`, `dir` | Payload frames carried by each platform transport mode (`h1`, `h3`, `h3dns`, `h3dnspump`) per direction. Keepalives and speed or latency echoes are excluded, persisted across restarts |
-| `urnet_transport_payload_bytes_total` | counter | `mode`, `dir` | Payload bytes carried by each platform transport mode, before framing, persisted across restarts |
+| `urnet_transport_frames_total` | counter | `mode`, `dir` | Payload frames carried by each platform transport mode (`h1`, `h1_websocket`, `h1_plus`, `h3`, `h3dns`, `h3dnspump`) per direction. The `h1` total is the sum of `h1_websocket` and `h1_plus`. Keepalives and speed or latency echoes are excluded, persisted across restarts |
+| `urnet_transport_payload_bytes_total` | counter | `mode`, `dir` | Payload bytes carried by each platform transport mode, before framing, persisted across restarts. Split by carrier the same way as the frame counter |
+| `urnet_h1plus_rx_messages_total` | counter | | Messages read on H1+ connections, persisted across restarts. `urnet_h1plus_messages_total` is the write side |
+| `urnet_h1plus_rx_bytes_total` | counter | | Message payload bytes read on H1+ connections, persisted across restarts. The framing is stripped on read, so this is the payload and not the wire bytes, unlike the write side |
 | `urnet_transport_direct_h1_frames_total` | counter | `dir` | Payload frames carried by H1 for the direct identity only. In the default setting this is the fair comparison for H3, which then runs for that identity alone. Under `auto`, a number or `all`, proxies can run H3 too. `urnet_transport_frames_total{mode="h1"}` is every proxy identity together, persisted across restarts |
 | `urnet_transport_direct_h1_payload_bytes_total` | counter | `dir` | Payload bytes carried by H1 for the direct identity only, persisted across restarts |
 | `urnet_h3_up` | gauge | | H3 connections up now |
