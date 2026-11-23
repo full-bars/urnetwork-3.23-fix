@@ -89,7 +89,7 @@ func jumpColumns(t *testing.T, m *topModel, b *tui.Buffer) int {
 // At 5m a noisy one second series is averaged into buckets a few dot columns
 // wide, so it reads as a smooth curve instead of a wall of bars.
 func TestRemoteNoisySeriesIsSmoothAtEveryZoom(t *testing.T) {
-	long := recordedReplies(t, "top_remote_recorded_330s.jsonl")
+	long := recordedReplies(t, "top_remote_recorded_660s.jsonl")
 	short := recordedReplies(t, "top_remote_recorded_150s.jsonl")
 	for _, c := range []struct {
 		name    string
@@ -112,7 +112,7 @@ func TestRemoteNoisySeriesIsSmoothAtEveryZoom(t *testing.T) {
 // Page 2 at every zoom level over the recorded series, at a wide and a
 // standard size.
 func TestRemoteZoomGoldens(t *testing.T) {
-	long := recordedReplies(t, "top_remote_recorded_330s.jsonl")
+	long := recordedReplies(t, "top_remote_recorded_660s.jsonl")
 	short := recordedReplies(t, "top_remote_recorded_150s.jsonl")
 	for level, name := range []string{"10s", "1m", "5m", "15m"} {
 		replies := short
@@ -148,7 +148,7 @@ func graphDataColumns(b *tui.Buffer, r tui.Rect) int {
 // timestamp as that index lost its precision in float64 and folded the whole
 // window into one column.
 func TestTopWindowGraphsFillThePlot(t *testing.T) {
-	long := recordedReplies(t, "top_remote_recorded_330s.jsonl")
+	long := recordedReplies(t, "top_remote_recorded_660s.jsonl")
 	short := recordedReplies(t, "top_remote_recorded_150s.jsonl")
 	for level, name := range []string{"10s", "1m", "5m", "15m"} {
 		replies := short
