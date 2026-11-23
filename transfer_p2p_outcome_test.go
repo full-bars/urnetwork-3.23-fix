@@ -113,6 +113,68 @@ func marshalTransferFrameForTest(t *testing.T, transferFrame *protocol.TransferF
 	return transferFrameBytes
 }
 
+func forgeBarrierFrameWithSequence(t *testing.T, sourceId Id, destinationId Id, sequenceId Id, content string) []byte {
+	t.Helper()
+	msgBytes, err := proto.Marshal(&protocol.SimpleMessage{Content: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return marshalTransferFrameForTest(t, &protocol.TransferFrame{
+		TransferPath: TransferPath{SourceId: sourceId, DestinationId: destinationId}.ToProtobuf(),
+		Pack: &protocol.Pack{
+			MessageId:      NewId().Bytes(),
+			SequenceId:     sequenceId.Bytes(),
+			SequenceNumber: 0,
+			Head:           true,
+			Frames: []*protocol.Frame{
+				{
+					MessageType:  protocol.MessageType_TestSimpleMessage,
+					MessageBytes: msgBytes,
+				},
+			},
+		},
+	})
+}
+
+// A mismatched pack whose sequence is older than the live head is discarded by
+// ReceiveBuffer and must not count as decoded. An admitted pack still counts
+// as decoded.
+func TestP2PSourceMismatchOlderSequenceRejected(t *testing.T) {
+	setSourcePolicy(t, "count", true)
+	peer := NewId()
+	client, route := newSourcePolicyClient(t, TransportTypeP2p, peer, 4)
+	delivered := deliverContent(client)
+	third := NewId()
+	client.ContractManager().AddNoContractPeer(third)
+
+	seqOld := Id{15: 1}
+	seqNew := Id{15: 2}
+	if !seqOld.LessThan(seqNew) {
+		seqOld, seqNew = seqNew, seqOld
+	}
+
+	route <- forgeBarrierFrameWithSequence(t, third, client.ClientId(), seqNew, "current")
+	expectDelivery(t, delivered, "current")
+	waitP2PSourceStats(t, client, func(stats ClientReceiveStatsSnapshot) bool {
+		return stats.SourceMismatchDecodedCount == 1
+	}, "one decoded mismatch for current sequence")
+
+	route <- forgeBarrierFrameWithSequence(t, third, client.ClientId(), seqOld, "stale")
+	waitP2PSourceStats(t, client, func(stats ClientReceiveStatsSnapshot) bool {
+		return stats.SourceMismatchCount == 2
+	}, "second mismatch outcome for older sequence")
+	if stats := client.ReceiveStats(); stats.SourceMismatchDecodedCount != 1 ||
+		stats.SourceMismatchRejectedCount != 1 ||
+		stats.SourceMismatchDroppedCount != 0 {
+		t.Fatalf("unexpected stats after older sequence pack: %+v", stats)
+	}
+	select {
+	case got := <-delivered:
+		t.Fatalf("older sequence pack should not be delivered, got %q", got)
+	default:
+	}
+}
+
 // A pack of encrypted control frames only is consumed by the session. The
 // receive gate discards only application frames, so such a pack must not be
 // counted as discarded.
