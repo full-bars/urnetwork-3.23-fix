@@ -8,7 +8,8 @@ import (
 	"github.com/urnetwork/connect/internal/tui/tcellui"
 )
 
-// The URnetwork logo inside `urnet-tools top`: a splash when top starts. The
+// The URnetwork logo inside `urnet-tools top`: a splash when top starts and a
+// dim watermark in a graph that has no data yet. The
 // artwork comes from internal/brand and the switches from logo.go, so top
 // follows the same rules as the rest of the tool.
 
@@ -125,4 +126,24 @@ func drawLogoGrid(b *tui.Buffer, x, y int, grid [][]brand.Cell, style *tui.Style
 // backend downgrades it to what the terminal supports.
 func logoColor(rgb []int) tui.Color {
 	return tui.RGB(uint8(rgb[0]), uint8(rgb[1]), uint8(rgb[2]))
+}
+
+// drawWatermark draws the 12x6 icon dim and centered in the rows of b from
+// top down, behind the empty state of a graph that has no data yet. A plot
+// too small for the icon gets nothing. The caller draws it only on the empty
+// path, so the first data drawn takes it away.
+func (m *topModel) drawWatermark(b *tui.Buffer, top int) {
+	if !m.logoDrawable() {
+		return
+	}
+	a := brand.Assets["icon-flat-12x6"]
+	rows := b.Height() - top
+	if a == nil || b.Width() < a.Cols || rows < a.Rows {
+		return
+	}
+	// The glyphs only: the theme's dim style carries the color, so the icon
+	// never stands out from the empty plot.
+	grid := brand.Grid(a, brand.Capabilities{Depth: brand.Mono, NoColor: true, UTF8: true})
+	dim := m.theme.Dim
+	drawLogoGrid(b, (b.Width()-a.Cols)/2, top+(rows-a.Rows)/2, grid, &dim)
 }
