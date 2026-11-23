@@ -557,3 +557,17 @@ func TestLingerBannerIsPaintedBoldInTheBadStyle(t *testing.T) {
 		t.Fatalf("the mono banner carries color: %+v", cell.Style)
 	}
 }
+
+func TestLingerDialogEndsDividerDrag(t *testing.T) {
+	m, _ := lingerModel(t, false)
+	m.drag = &topDrag{region: "throughput"}
+	m.lastPress = topPress{region: "throughput"}
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 'L'})
+	if !m.lingerFix.dialog {
+		t.Fatal("L did not open the dialog")
+	}
+	m.handle(tcellui.Event{Kind: tcellui.EventKey, Key: tcellui.KeyEsc})
+	if m.drag != nil || m.lastPress != (topPress{}) {
+		t.Fatalf("stale gesture after dialog: drag=%v press=%v", m.drag, m.lastPress)
+	}
+}

@@ -191,6 +191,7 @@ func (m *topModel) openLingerDialog() bool {
 	if m.lingerFix.running || !m.lingerBannerActive() || !m.lingerFixable {
 		return false
 	}
+	m.drag, m.lastPress = nil, topPress{}
 	m.lingerFix.dialog, m.lingerFix.sel = true, 0
 	return true
 }
