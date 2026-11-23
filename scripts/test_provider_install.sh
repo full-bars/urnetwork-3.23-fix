@@ -1179,7 +1179,7 @@ test_install_logo_columns() {
     # is offered to.
     local widest=0 line rows
     rows="$(mktemp)"
-    sed -n "/^install_logo ()$/,/^URNETWORK_WORDMARK$/p" scripts/Provider_Install_Linux.sh | sed -n '8,13p' > "$rows"
+    sed -n "/^install_logo ()$/,/^URNETWORK_WORDMARK$/p" scripts/Provider_Install_Linux.sh | sed -n "/<<'URNETWORK_WORDMARK'/,/^URNETWORK_WORDMARK$/p" | sed '1d;$d' | sed '/^$/d' > "$rows"
     while IFS= read -r line; do
         [ "${#line}" -gt "$widest" ] && widest="${#line}"
     done < "$rows"

@@ -483,7 +483,13 @@ install_logo ()
 {
     [ "${FORCE:-0}" = "1" ] && return 0
     [ -t 1 ] || return 0
-    [ "$(install_logo_columns)" -ge 82 ] || return 0
+    # The width is read inside a command substitution, where stdout is a pipe.
+    # Keep the real stdout on descriptor 7 so the size comes from the terminal
+    # that will show the artwork, which is not always the controlling terminal.
+    exec 7>&1
+    logo_width="$(install_logo_columns)"
+    exec 7>&-
+    [ "$logo_width" -ge 82 ] || return 0
     cat <<'URNETWORK_WORDMARK'
 
 ▗▟███▄  ▐█▌     ▟█ ▐███████▙▖                ▗▄█                         ███
@@ -495,12 +501,13 @@ install_logo ()
 URNETWORK_WORDMARK
 }
 
-# install_logo_tty_size prints the terminal's "rows columns" from the
-# controlling terminal, or fails when there is none. A function of its own so
+# install_logo_tty_size prints the terminal's "rows columns": first the one
+# behind descriptor 7 (the saved stdout, see install_logo), then the
+# controlling terminal. It fails when there is neither. A function of its own so
 # the test suite can stand in for the terminal.
 install_logo_tty_size ()
 {
-    stty size < /dev/tty 2>/dev/null
+    stty size 2>/dev/null <&7 || stty size 2>/dev/null </dev/tty
 }
 
 # install_logo_columns reports the terminal width. COLUMNS is what an
