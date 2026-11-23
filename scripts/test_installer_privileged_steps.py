@@ -56,7 +56,7 @@ pr_info() { fmt="$1"; shift; printf "$fmt\n" "$@"; }
 pr_warn() { fmt="$1"; shift; printf "$fmt\n" "$@"; }
 loginctl() { case "$1" in show-user) [ -f "$ROOT/state" ] && echo yes || echo no;; enable-linger) echo user >> "$ROOT/log"; return 1;; esac; }
 sudo() { echo "sudo $*" >> "$ROOT/log"; touch "$ROOT/state"; }
-""" + function("installer_enable_linger") + function("installer_linger_summary") + "\ninstaller_enable_linger alice install || :; installer_linger_summary alice\n"
+""" + function("installer_linger_tty_askable") + function("installer_enable_linger") + function("installer_linger_summary") + "\ninstaller_enable_linger alice install || :; installer_linger_summary alice\n"
                 master, slave = pty.openpty()
                 try:
                     result = subprocess.run(["sh", "-c", harness], stdin=slave, stdout=slave, stderr=slave, env=dict(os.environ, ROOT=tmp), timeout=10)
@@ -85,6 +85,89 @@ sudo() { echo "sudo $*" >> "$ROOT/log"; touch "$ROOT/state"; }
                 else:
                     self.assertEqual(log, ["user"])
                     self.assertIn("WARNING: lingering is OFF for alice", text)
+
+    def test_linger_piped_stdin_with_terminal_asks_and_obeys(self):
+        for answer, wants_sudo in ((b"y\n", True), (b"n\n", False)):
+            with self.subTest(answer=answer.decode().strip()), tempfile.TemporaryDirectory() as tmp:
+                rc, out, log = self._run_linger_piped_with_terminal(tmp, answer)
+                self.assertIn("Run it now? [y/N]", out)
+                if wants_sudo:
+                    self.assertEqual(log, ["user", "sudo loginctl enable-linger alice"], out)
+                    self.assertIn("lingering is on for alice", out)
+                else:
+                    self.assertEqual(log, ["user"], out)
+                    self.assertIn("WARNING: lingering is OFF for alice", out)
+
+    def test_linger_piped_stdin_without_terminal_never_asks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            harness = self._linger_stubs() + function("installer_linger_tty_askable") + function("installer_enable_linger") + function("installer_linger_summary") + "\ninstaller_enable_linger alice install || :; installer_linger_summary alice\n"
+            result = subprocess.run(
+                ["sh", "-c", harness],
+                input="y\n",
+                text=True,
+                capture_output=True,
+                preexec_fn=os.setsid,
+                env=self._linger_env(tmp),
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("Run it now?", result.stdout)
+            self.assertEqual((root / "log").read_text().splitlines(), ["user"])
+            self.assertIn("WARNING: lingering is OFF for alice", result.stdout)
+
+    def _linger_stubs(self):
+        return r"""
+pr_info() { fmt="$1"; shift; printf "$fmt\n" "$@"; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\n" "$@"; }
+loginctl() { case "$1" in show-user) [ -f "$ROOT/state" ] && echo yes || echo no;; enable-linger) echo user >> "$ROOT/log"; return 1;; esac; }
+sudo() { echo "sudo $*" >> "$ROOT/log"; touch "$ROOT/state"; }
+"""
+
+    def _linger_env(self, tmp):
+        env = {k: v for k, v in os.environ.items() if k not in ("FORCE", "URNET_INSTALL_LINGER")}
+        env["ROOT"] = tmp
+        return env
+
+    def _run_linger_piped_with_terminal(self, tmp, answer: bytes):
+        """Runs the lingering fix with piped stdin, a real controlling pty, and
+        the answer typed on that pty, which is the curl | sh case."""
+        root = Path(tmp)
+        master, slave = pty.openpty()
+        pipe_r, pipe_w = os.pipe()
+        harness = self._linger_stubs() + function("installer_linger_tty_askable") + function("installer_enable_linger") + function("installer_linger_summary") + "\ninstaller_enable_linger alice install || :; installer_linger_summary alice\n"
+
+        def preexec():
+            os.setsid()
+            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+        proc = subprocess.Popen(
+            ["sh", "-c", harness],
+            stdin=pipe_r,
+            stdout=slave,
+            stderr=slave,
+            preexec_fn=preexec,
+            close_fds=False,
+            env=self._linger_env(tmp),
+        )
+        os.close(slave)
+        os.close(pipe_r)
+        os.write(pipe_w, b"piped stdin payload\n")
+        os.close(pipe_w)
+        os.write(master, answer)
+        chunks = []
+        while True:
+            try:
+                data = os.read(master, 1024)
+                if not data:
+                    break
+                chunks.append(data)
+            except OSError:
+                break
+        proc.wait()
+        os.close(master)
+        out = b"".join(chunks).decode(errors="replace").replace("\r\n", "\n")
+        log = (root / "log").read_text().splitlines() if (root / "log").exists() else []
+        return proc.returncode, out, log
 
     def test_linger_without_sudo_gives_root_command(self):
         harness = r"""

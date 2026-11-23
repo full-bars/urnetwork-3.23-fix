@@ -2489,6 +2489,18 @@ func_run_as_user ()
     fi
 }
 
+# installer_linger_tty_askable reports whether the installation can ask its
+# question on a terminal. The test is the open of the device: /dev/tty does not
+# open at all when the process has no controlling terminal, which is the case
+# for a job with no session behind it. The file mode of the node is not a
+# usable test, because devtmpfs creates /dev/tty as 0620 root:tty while the
+# person's own terminal opens for them.
+installer_linger_tty_askable ()
+{
+    linger_ask_tty="${linger_tty:-/dev/tty}"
+    ( : < "$linger_ask_tty" ) 2>/dev/null
+}
+
 # Enable lingering without prompting unless explicitly offered during installation.
 installer_enable_linger ()
 {
@@ -2507,10 +2519,14 @@ installer_enable_linger ()
         return 0
     fi
     if [ "$linger_mode" = install ] && command -v sudo >/dev/null 2>&1; then
-        if [ "${FORCE:-0}" != 1 ] && [ -t 0 ] && [ -t 1 ] && ( : < "${linger_tty:-/dev/tty}" ) 2>/dev/null; then
+        # A curl | sh run has no terminal on stdin, but the person is still at
+        # one, so the question is offered whenever the controlling terminal can
+        # be opened. The answer is read from that terminal, which is the same
+        # terminal as stdin when stdin is one.
+        if [ "${FORCE:-0}" != 1 ] && installer_linger_tty_askable; then
             printf 'I can enable it with one command: sudo loginctl enable-linger %s. This asks for your sudo password. Run it now? [y/N] ' "$linger_user"
             linger_answer=""
-            read -r linger_answer < "${linger_tty:-/dev/tty}" || linger_answer=""
+            read -r linger_answer < "$linger_ask_tty" || linger_answer=""
             case "$linger_answer" in
                 [Yy]|[Yy][Ee][Ss]) sudo loginctl enable-linger "$linger_user" || : ;;
             esac
