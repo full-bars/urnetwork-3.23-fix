@@ -51,6 +51,7 @@ var topPages = []topPage{
 	{id: "remote", title: "Remote", available: (*topModel).remotePageAvailable, draw: (*topModel).drawRemotePage},
 	{id: "billable", title: "Billable", available: (*topModel).billablePageAvailable, draw: (*topModel).drawBillablePage},
 	{id: "total", title: "Total", available: (*topModel).totalPageAvailable, draw: (*topModel).drawTotalPage},
+	{id: "transports", title: "Transports", available: (*topModel).transportsPageAvailable, draw: (*topModel).drawTransportsPage},
 }
 
 // pageIndex is the selected page's table index, clamped to the table.
