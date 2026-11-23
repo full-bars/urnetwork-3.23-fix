@@ -191,7 +191,7 @@ The throughput graphs draw one fixed, round time span and fill the plot with it 
 | `5m` | 5 minutes |
 | `15m` | 15 minutes |
 
-`1m` is the default. Press `w` to step to the next scale and `W` to step back, and both wrap around the table. The footer names the scale (`w zoom 1m`). Clicking the footer hint or the graph title steps to the next scale. The choice is saved in `top.conf` as `graph.window`, and a missing or unknown value falls back to the default, so an older file keeps working.
+`1m` is the default. Press `w` to step to the next scale and `W` to step back, and both wrap around the table. Scrolling the mouse wheel over any graph (throughput, Remote, Billable or Total) zooms the shared time window continuously by 1.25x per notch, clamped between `5s` and `15m`. Wheel forward zooms in and wheel back zooms out. The footer and graph titles name the exact span (`w zoom 1m40s`), or the preset name when it matches a preset (`w zoom 1m`). From a custom span, `w` and `W` snap to the nearest preset in that direction and clear the custom span. Clicking the footer hint or the graph title steps to the next preset. Presets are saved in `top.conf` as `graph.window`, and a missing or unknown value falls back to the default, so an older file keeps working. Custom wheel spans last for the session only.
 
 The graphs keep the readings of the longest scale, one reading per traffic poll, which is 9000 readings at the 100 ms refresh and more than enough at the slower ones. When a scale holds more readings than the plot has columns, each column shows the mean of the readings in it, so a noisy series at 5m or 15m reads as a smooth band. The peak table in the Now panel keeps the real peaks. When it holds fewer, each reading covers its own share of the columns, so the plot is a set of step bars and no reading is smoothed away.
 
@@ -318,7 +318,7 @@ The style name appears in the legend row when the panel is wide enough; in narro
 
 ## Mouse and keyboard mode
 
-`urnet-tools top` runs the terminal in one of two modes. In mouse mode the terminal reports clicks, hover and the wheel to top, so a click on a footer hint, a page tab or a divider works. In keyboard mode that reporting is off, so the terminal keeps the mouse and its own text selection works with an ordinary drag.
+`urnet-tools top` runs the terminal in one of two modes. In mouse mode the terminal reports clicks, hover and the wheel to top, so a click on a footer hint, a page tab or a divider works. Scrolling the wheel over a graph zooms the shared graph time window in (wheel forward) or out (wheel back) between `5s` and `15m` without scrolling any list, while scrolling over Events or Goroutines scrolls that list. In keyboard mode that reporting is off, so the terminal keeps the mouse and its own text selection works with an ordinary drag.
 
 Press `K` to switch between the two. The footer hint names the mode the key would switch to, and the mode that is on is written at the right end of the same row. A one-line message at the bottom says what changed:
 
