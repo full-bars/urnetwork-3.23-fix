@@ -86,9 +86,88 @@ func (m *topModel) remoteData() (up, down []float64, newest time.Time, interval 
 	return up, down, m.now().Truncate(interval), interval, true
 }
 
+// remoteDirData is the client app's form of the chart: billable upload and
+// download, in bytes and in packets. It comes from the live 1 s ring once that
+// carries packet readings, and from the snapshot's direction and packet blocks
+// before the first traffic poll. ok is false for a provider without the packet
+// block, which keeps the billable over total form.
+func (m *topModel) remoteDirData() (upB, downB, upP, downP []float64, newest time.Time, interval time.Duration, ok bool) {
+	s := m.snap
+	if s == nil {
+		return nil, nil, nil, nil, time.Time{}, 0, false
+	}
+	if h := &m.trafficHistory; len(h.billable) > 0 {
+		if !h.hasPackets() {
+			return nil, nil, nil, nil, time.Time{}, 0, false
+		}
+		return h.upBytes, h.downBytes, h.upPackets, h.downPackets, m.now().Truncate(time.Second), time.Second, true
+	}
+	if s.Traffic == nil || s.Traffic.Directions == nil || s.Traffic.Packets == nil {
+		return nil, nil, nil, nil, time.Time{}, 0, false
+	}
+	d, p := s.Traffic.Directions, s.Traffic.Packets
+	upB, downB, upP, downP = d.BillableTx.HistoryBps, d.BillableRx.HistoryBps, p.BillableTx.HistoryPps, p.BillableRx.HistoryPps
+	if len(upB) == 0 || len(downB) == 0 || len(upP) == 0 || len(downP) == 0 {
+		return nil, nil, nil, nil, time.Time{}, 0, false
+	}
+	interval = time.Second
+	if s.Rate.HistoryIntervalSeconds > 0 {
+		interval = time.Duration(s.Rate.HistoryIntervalSeconds * float64(time.Second))
+	}
+	return upB, downB, upP, downP, m.now().Truncate(interval), interval, true
+}
+
+// snapshotDirRates is the direction and packet reading of the snapshot that
+// lines up with entry i of a history n long, newest entries aligned, used to
+// seed the live ring. Unknown values are NaN.
+func snapshotDirRates(s *NodeSnapshot, i, n int) topDirRates {
+	out := topNoDirRates()
+	if s == nil || s.Traffic == nil || s.Traffic.Directions == nil || s.Traffic.Packets == nil {
+		return out
+	}
+	d, p := s.Traffic.Directions, s.Traffic.Packets
+	for k, h := range [][]float64{d.BillableTx.HistoryBps, d.BillableRx.HistoryBps, p.BillableTx.HistoryPps, p.BillableRx.HistoryPps} {
+		if j := len(h) - (n - i); j >= 0 && j < len(h) {
+			out[k] = h[j]
+		}
+	}
+	return out
+}
+
+// topRemoteSharedScale draws both halves of page 2 against one byte scale and
+// one packet scale, as the client app does, instead of one scale per half. It
+// is an internal switch for comparing the two, not a user setting.
+var topRemoteSharedScale = false
+
 // drawRemote draws the Remote panel from the model alone.
 func (m *topModel) drawRemote(b *tui.Buffer) {
 	th := m.theme
+	if m.remoteScales == nil {
+		m.remoteScales = map[string]*remoteScale{}
+	}
+	if upB, downB, upP, downP, newest, interval, ok := m.remoteDirData(); ok {
+		bytesStyle, packetStyle := remotePalette(th)
+		drawRemoteChart(b, remoteChart{
+			Up: []remoteSeries{
+				{Label: "upload", Style: bytesStyle, Group: "remote upload", Values: upB},
+				{Style: packetStyle, Group: "remote upload packets", Glyph: '+', Packets: true, Values: upP},
+			},
+			Down: []remoteSeries{
+				{Label: "download", Style: bytesStyle, Group: "remote download", Values: downB},
+				{Style: packetStyle, Group: "remote download packets", Glyph: '+', Packets: true, Values: downP},
+			},
+			Now:      m.now(),
+			Newest:   newest,
+			Interval: interval,
+			Window:   m.remoteWindow(),
+			Scales:   m.remoteScales,
+			Shared:   topRemoteSharedScale,
+			ASCII:    th.ASCII,
+			Dim:      th.Dim,
+			Text:     th.Accent,
+		})
+		return
+	}
 	up, down, newest, interval, ok := m.remoteData()
 	if !ok {
 		msg := "waiting for the provider"
@@ -98,9 +177,6 @@ func (m *topModel) drawRemote(b *tui.Buffer) {
 		m.drawWatermark(b, 1)
 		b.Put(tui.Truncate(msg, b.Width(), th.ASCII), 0, 0, th.Dim)
 		return
-	}
-	if m.remoteScales == nil {
-		m.remoteScales = map[string]*remoteScale{}
 	}
 	bytesStyle, _ := remotePalette(th)
 	chart := remoteChart{

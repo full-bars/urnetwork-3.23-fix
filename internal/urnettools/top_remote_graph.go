@@ -74,9 +74,12 @@ type remoteChart struct {
 	Interval time.Duration
 	Window   time.Duration
 	Scales   map[string]*remoteScale
-	ASCII    bool
-	Dim      tui.Style // center line, legends and the peak labels
-	Text     tui.Style // the direction arrows when a direction is active
+	// Shared draws both halves against one byte scale and one packet scale,
+	// as the client app does, instead of each series group on its own.
+	Shared bool
+	ASCII  bool
+	Dim    tui.Style // center line, legends and the peak labels
+	Text   tui.Style // the direction arrows when a direction is active
 }
 
 // remoteScale eases the height the plot scales to. A new window peak starts a
@@ -220,6 +223,18 @@ func drawRemoteSummary(b *tui.Buffer, c remoteChart) {
 	b.Put(tui.Truncate(line, b.Width(), c.ASCII), 0, 0, c.Dim)
 }
 
+// scaleKey is the scale group a series draws against: its own group, or with
+// Shared one group for all bytes and one for all packets.
+func (c remoteChart) scaleKey(s remoteSeries) string {
+	if !c.Shared {
+		return s.Group
+	}
+	if s.Packets {
+		return "shared packets"
+	}
+	return "shared bytes"
+}
+
 // remoteScales folds the window peak of every scale group into its easing state
 // and returns the scale each group is drawn against this frame. Groups are
 // walked in sorted order so the easing never depends on map iteration.
@@ -232,8 +247,8 @@ func remoteScales(c remoteChart) map[string]float64 {
 				floor = remotePacketFloor
 			}
 			peak := max(remoteWindowPeak(c, s.Values), floor)
-			if peak > peaks[s.Group] {
-				peaks[s.Group] = peak
+			if key := c.scaleKey(s); peak > peaks[key] {
+				peaks[key] = peak
 			}
 		}
 	}
@@ -457,7 +472,7 @@ func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSe
 			if len(pts) == 0 {
 				continue
 			}
-			c.drawHalfASCII(b, s, pts, scales[s.Group], up, y0, rows, i)
+			c.drawHalfASCII(b, s, pts, scales[c.scaleKey(s)], up, y0, rows, i)
 		}
 		return
 	}
@@ -473,7 +488,7 @@ func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSe
 		if len(pts) == 0 {
 			continue
 		}
-		cv.plot(pts, scales[s.Group], up, i, !s.Packets)
+		cv.plot(pts, scales[c.scaleKey(s)], up, i, !s.Packets)
 	}
 	cv.draw(b, y0)
 }

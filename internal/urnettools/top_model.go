@@ -462,6 +462,8 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 			}
 		}
 		m.live.add(lt.AtUnixNano, lt.BillableBytes, lt.TotalBytes)
+		// The billable direction and packet rates of this reply, for page 2.
+		dirs := m.trafficHistory.observeDirs(lt, 2*max(m.interval, time.Second))
 		// The peak is the reading's own rate, per second however fast the poll
 		// is. A counter that went backwards restarts the live window, so the
 		// pair is only read when it moves forward.
@@ -488,6 +490,7 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 						}
 						at := lt.AtUnixNano - int64(len(history)-i)*int64(time.Second)
 						m.trafficHistory.push(at, value, total)
+						m.trafficHistory.setDirs(snapshotDirRates(m.snap, i, len(history)))
 						// The graphs draw the window from the same history, so
 						// a provider that has been up for a while fills the
 						// longer levels at once instead of from the first poll.
@@ -499,6 +502,7 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 				} else {
 					m.trafficHistory.pushSlot(lt.AtUnixNano, b, t)
 				}
+				m.trafficHistory.setDirs(dirs)
 				m.winRing.push(lt.AtUnixNano, time.Duration(lt.AtUnixNano-last), b, t)
 			}
 		}

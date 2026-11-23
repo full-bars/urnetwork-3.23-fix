@@ -91,11 +91,98 @@ func seriesPeak(v []float64) float64 {
 
 // topTrafficHistory keeps sampled rates and the time represented by each column.
 // Slow polling uses one-second slots and leaves missing seconds unknown.
+//
+// upBytes, downBytes, upPackets and downPackets are the billable upload and
+// download rates in bytes and packets, one entry per column of billable. An
+// entry is NaN when the reply did not carry the counters, so a provider without
+// the packet block keeps the series empty of readings.
 type topTrafficHistory struct {
 	billable, total []float64
 	second          int64
 	spans           []time.Duration
 	seq             int64
+
+	upBytes, downBytes, upPackets, downPackets []float64
+	// dirPrev is the last reading of the direction counters, which the next
+	// reading differences into rates.
+	dirPrev topDirCounters
+}
+
+// topDirCounters is one reading of the billable direction counters.
+type topDirCounters struct {
+	at                 int64
+	txB, rxB, txP, rxP uint64
+	ok                 bool
+}
+
+// topDirRates is upload bytes, download bytes, upload packets and download
+// packets per second, NaN where unknown.
+type topDirRates [4]float64
+
+func topNoDirRates() topDirRates {
+	return topDirRates{math.NaN(), math.NaN(), math.NaN(), math.NaN()}
+}
+
+// dirSeries lists the four direction series in topDirRates order.
+func (h *topTrafficHistory) dirSeries() [4]*[]float64 {
+	return [4]*[]float64{&h.upBytes, &h.downBytes, &h.upPackets, &h.downPackets}
+}
+
+// hasPackets reports whether any column carries a packet reading.
+func (h *topTrafficHistory) hasPackets() bool {
+	for i := range h.upPackets {
+		if !math.IsNaN(h.upPackets[i]) && !math.IsNaN(h.downPackets[i]) && !math.IsNaN(h.upBytes[i]) && !math.IsNaN(h.downBytes[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// observeDirs differences one reply's direction counters against the last
+// one. A reply without all four counters, a counter that went back, or a gap
+// longer than maxGap gives no rate and starts over.
+func (h *topTrafficHistory) observeDirs(lt *LiveTraffic, maxGap time.Duration) topDirRates {
+	out := topNoDirRates()
+	if lt.BillableTxBytes == nil || lt.BillableRxBytes == nil || lt.BillableTxPackets == nil || lt.BillableRxPackets == nil {
+		h.dirPrev = topDirCounters{}
+		return out
+	}
+	cur := topDirCounters{at: lt.AtUnixNano, txB: *lt.BillableTxBytes, rxB: *lt.BillableRxBytes, txP: *lt.BillableTxPackets, rxP: *lt.BillableRxPackets, ok: true}
+	p := h.dirPrev
+	h.dirPrev = cur
+	span := time.Duration(cur.at - p.at)
+	if !p.ok || span <= 0 || span > maxGap || cur.txB < p.txB || cur.rxB < p.rxB || cur.txP < p.txP || cur.rxP < p.rxP {
+		return out
+	}
+	secs := span.Seconds()
+	return topDirRates{float64(cur.txB-p.txB) / secs, float64(cur.rxB-p.rxB) / secs, float64(cur.txP-p.txP) / secs, float64(cur.rxP-p.rxP) / secs}
+}
+
+// setDirs sets the direction rates of the newest column.
+func (h *topTrafficHistory) setDirs(d topDirRates) {
+	for i, s := range h.dirSeries() {
+		if n := len(*s); n > 0 {
+			(*s)[n-1] = d[i]
+		}
+	}
+}
+
+// appendDirs adds n unknown direction columns.
+func (h *topTrafficHistory) appendDirs(n int) {
+	for _, s := range h.dirSeries() {
+		for i := 0; i < n; i++ {
+			*s = append(*s, math.NaN())
+		}
+	}
+}
+
+// trimDirs keeps the newest n direction columns.
+func (h *topTrafficHistory) trimDirs(n int) {
+	for _, s := range h.dirSeries() {
+		if len(*s) > n {
+			*s = (*s)[len(*s)-n:]
+		}
+	}
 }
 
 func (h *topTrafficHistory) push(at int64, b, t float64) {
@@ -111,24 +198,29 @@ func (h *topTrafficHistory) pushSlot(at int64, b, t float64) {
 		h.second = second
 		h.billable, h.total = []float64{b}, []float64{t}
 		h.spans = []time.Duration{time.Second}
+		h.upBytes, h.downBytes, h.upPackets, h.downPackets = nil, nil, nil, nil
+		h.appendDirs(1)
 		h.seq++
 		return
 	}
 	gap := second - h.second
 	if gap >= topGraphCapacity {
 		h.billable, h.total, h.spans = nil, nil, nil
+		h.upBytes, h.downBytes, h.upPackets, h.downPackets = nil, nil, nil, nil
 		gap = topGraphCapacity
 	}
 	for i := int64(0); i < gap; i++ {
 		h.billable = append(h.billable, math.NaN())
 		h.total = append(h.total, math.NaN())
 		h.spans = append(h.spans, time.Second)
+		h.appendDirs(1)
 		h.seq++
 	}
 	if len(h.billable) > topGraphCapacity {
 		h.billable = h.billable[len(h.billable)-topGraphCapacity:]
 		h.total = h.total[len(h.total)-topGraphCapacity:]
 		h.spans = h.spans[len(h.spans)-topGraphCapacity:]
+		h.trimDirs(topGraphCapacity)
 	}
 	h.second = second
 	h.billable[len(h.billable)-1], h.total[len(h.total)-1] = b, t
@@ -140,12 +232,14 @@ func (h *topTrafficHistory) pushColumn(at int64, span time.Duration, b, t float6
 	h.billable = append(h.billable, b)
 	h.total = append(h.total, t)
 	h.spans = append(h.spans, span)
+	h.appendDirs(1)
 	h.second = at / int64(time.Second)
 	h.seq++
 	if len(h.billable) > keep {
 		h.billable = h.billable[len(h.billable)-keep:]
 		h.total = h.total[len(h.total)-keep:]
 		h.spans = h.spans[len(h.spans)-keep:]
+		h.trimDirs(keep)
 	}
 }
 
