@@ -99,7 +99,7 @@ func (m *topModel) pageStrip(content tui.Rect) ([]int, int) {
 // are open, and the compact view below the full layout's minimum has no strip
 // to switch, so it stays on the dashboard.
 func (m *topModel) pageKeysActive() bool {
-	if m.compact || m.overview || m.help || m.menu || m.panel != "" || m.proxyPopup {
+	if m.compact || m.overview || m.help || m.menu || m.about || m.panel != "" || m.proxyPopup {
 		return false
 	}
 	return true

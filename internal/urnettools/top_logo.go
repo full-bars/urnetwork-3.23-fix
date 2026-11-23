@@ -1,6 +1,9 @@
 package urnettools
 
 import (
+	"runtime"
+	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/urnetwork/connect/internal/brand"
@@ -9,7 +12,8 @@ import (
 )
 
 // The URnetwork logo inside `urnet-tools top`: a splash when top starts and a
-// dim watermark in a graph that has no data yet. The
+// dim watermark in a graph that has no data yet, and the About window on A.
+// The
 // artwork comes from internal/brand and the switches from logo.go, so top
 // follows the same rules as the rest of the tool.
 
@@ -146,4 +150,137 @@ func (m *topModel) drawWatermark(b *tui.Buffer, top int) {
 	grid := brand.Grid(a, brand.Capabilities{Depth: brand.Mono, NoColor: true, UTF8: true})
 	dim := m.theme.Dim
 	drawLogoGrid(b, (b.Width()-a.Cols)/2, top+(rows-a.Rows)/2, grid, &dim)
+}
+
+// topRepoName is the repository the About window names.
+const topRepoName = "full-bars/urnetwork-3.23-fix"
+
+// topLogoOffHint is the About window's line on how to turn the logo off.
+const topLogoOffHint = "Logo off: --no-logo, URNET_NO_LOGO=1 or ui.logo = off in top.conf"
+
+// topBuildInfo returns the commit the binary was built from, when the build
+// recorded it, with "+changes" when the tree had uncommitted changes.
+var topBuildInfo = func() (string, bool) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info == nil {
+		return "", false
+	}
+	rev, modified := "", false
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			modified = s.Value == "true"
+		}
+	}
+	if rev == "" {
+		return "", false
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if modified {
+		rev += "+changes"
+	}
+	return rev, true
+}
+
+// topBuildLine is the build line of the About window: the commit when the
+// build recorded one, the Go version and the platform.
+func topBuildLine() string {
+	line := "built"
+	if rev, ok := topBuildInfo(); ok {
+		line += " from " + rev
+	}
+	return line + " with " + runtime.Version() + " " + runtime.GOOS + "/" + runtime.GOARCH
+}
+
+// aboutHandle applies an event while the About window is open. Esc or any
+// other key closes it, and so does a click outside it. The closing event does
+// nothing else. Ctrl-C still quits.
+func (m *topModel) aboutHandle(ev tcellui.Event) (topEffect, bool) {
+	if !m.about {
+		return topNone, false
+	}
+	switch ev.Kind {
+	case tcellui.EventKey:
+		if ev.Key == tcellui.KeyCtrlC {
+			return topNone, false
+		}
+		m.about = false
+	case tcellui.EventRune:
+		m.about = false
+	case tcellui.EventMouse:
+		r := m.aboutRect
+		inside := ev.X >= r.X && ev.X < r.X+r.W && ev.Y >= r.Y && ev.Y < r.Y+r.H
+		if ev.Action == tcellui.MousePress && !inside {
+			m.about = false
+		}
+	default:
+		return topNone, false
+	}
+	return topNone, true
+}
+
+// aboutArt picks the largest artwork that fits a window of the given size
+// next to the text rows: the wide wordmark on a wide screen, the icon on a
+// standard one, and nothing when the logo is off or cannot be shown.
+func (m *topModel) aboutArt(w, h, textRows int) *brand.Asset {
+	if !m.logoDrawable() {
+		return nil
+	}
+	for _, name := range []string{"wordmark-100x7", "wordmark-80x6", "icon-flat-12x6", "icon-flat-8x4"} {
+		a := brand.Assets[name]
+		if a != nil && a.Cols+4 <= w && a.Rows+textRows+3 <= h {
+			return a
+		}
+	}
+	return nil
+}
+
+// drawAbout draws the About window centered over whatever is on screen: the
+// logo, the version and build lines, the repository and how to turn the logo
+// off.
+func (m *topModel) drawAbout(b *tui.Buffer) {
+	th := m.theme
+	text := []string{"urnet-tools " + ToolVersion, topBuildLine(), topRepoName, "", topLogoOffHint, "", "Esc or any key closes this window"}
+	a := m.aboutArt(b.Width(), b.Height(), len(text)+1)
+	if a == nil || strings.HasPrefix(a.Name, "icon") {
+		// The icon carries no name and no art carries nothing, so the
+		// window names the network in words.
+		text = append([]string{"URnetwork"}, text...)
+	}
+	w := 0
+	for _, l := range text {
+		w = max(w, tui.StringWidth(l))
+	}
+	artRows := 0
+	if a != nil {
+		w = max(w, a.Cols)
+		artRows = a.Rows + 1
+	}
+	w = min(w+4, b.Width())
+	h := min(len(text)+artRows+2, b.Height())
+	r := tui.Rect{X: (b.Width() - w) / 2, Y: (b.Height() - h) / 2, W: w, H: h}
+	m.aboutRect = r
+	panel := b.Sub(r)
+	panel.Fill(panel.Rect(), ' ', tui.Style{})
+	in := tui.DrawBox(panel, "About", th.Frame, th.Border, th.Accent, th.ASCII)
+	y := 0
+	if a != nil {
+		drawLogoGrid(in, (in.Width()-a.Cols)/2, 0, brand.Grid(a, m.logoCaps), nil)
+		y = artRows
+	}
+	for i, l := range text {
+		st := tui.Style{}
+		switch {
+		case l == "URnetwork" || strings.HasPrefix(l, "urnet-tools "):
+			st = th.Accent
+		case i == len(text)-1:
+			st = th.Dim
+		}
+		l = tui.Truncate(l, in.Width(), th.ASCII)
+		in.Put(l, max(0, (in.Width()-tui.StringWidth(l))/2), y+i, st)
+	}
 }
