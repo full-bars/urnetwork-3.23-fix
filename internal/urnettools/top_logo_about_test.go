@@ -148,3 +148,23 @@ func TestTopBuildLine(t *testing.T) {
 		t.Fatalf("build line without a revision = %q", got)
 	}
 }
+
+// Opening About while a divider is being dragged must end the drag, as a
+// release would. About takes every mouse event, so the release never reaches
+// the drag cleanup, and the old divider would follow the next drag.
+func TestTopAboutEndsADividerDrag(t *testing.T) {
+	fakeBuildInfo(t)
+	m, _ := logoTopModel(t, tui.DefaultTheme(), 1, 120, 40, nil)
+	m.enableLogo(false, false)
+	m.splash.done = true
+	m.apply(m.gen, topFlowing(t), nil)
+	m.drag = &topDrag{region: "throughput"}
+	m.lastPress = topPress{region: "throughput"}
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 'A'})
+	if !m.about {
+		t.Fatal("A must open the About window")
+	}
+	if m.drag != nil || m.lastPress != (topPress{}) {
+		t.Fatalf("the drag survived the About window: drag=%v press=%v", m.drag, m.lastPress)
+	}
+}
