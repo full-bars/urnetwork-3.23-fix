@@ -89,12 +89,14 @@ func (m *topModel) drawDirectionPage(b *tui.Buffer, content tui.Rect, id, title 
 		if m.conn == topDisconnected {
 			msg = "no data: " + m.lastErr
 		}
+		m.drawWatermark(box, 1)
 		box.Put(tui.Truncate(msg, box.Width(), th.ASCII), 0, 0, th.Dim)
 		return
 	}
 	if len(up) == 0 && len(down) == 0 {
 		// A new provider sends the block before its first sample. The chart's
 		// own empty state names the Remote panel, so the page says its piece.
+		m.drawWatermark(box, 1)
 		box.Put(tui.Truncate("waiting for the first direction samples", box.Width(), th.ASCII), 0, 0, th.Dim)
 		return
 	}
