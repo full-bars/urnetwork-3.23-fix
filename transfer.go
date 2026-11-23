@@ -1280,6 +1280,18 @@ func (self *Client) AddForwardCallback(forwardCallback ForwardFunction) func() {
 // session runs in EncryptionModeRequired. Such a frame is acked to keep the
 // sequence moving and then thrown away, so the receive path must not report it
 // as decoded.
+// packHasApplicationFrames reports whether the pack carries any frame that is not
+// an encrypted control frame. The receive gate routes control frames into the
+// session and discards only the application frames that remain.
+func packHasApplicationFrames(pack *protocol.Pack) bool {
+	for _, frame := range pack.GetFrames() {
+		if frame != nil && frame.GetMessageType() != protocol.MessageType_TransferEncryptedControl {
+			return true
+		}
+	}
+	return false
+}
+
 func (self *Client) plaintextReceiveDiscarded(sourceId Id) bool {
 	manager := self.encryptionSessionManager
 	return manager != nil && manager.RequireEncryption() && !manager.ReceiveNoSession(sourceId)
@@ -1605,6 +1617,14 @@ func (self *Client) run() {
 				}
 			}
 
+			if ack == nil && pack == nil {
+				// An envelope with neither an ack nor a pack has nothing for a
+				// consumer to take, so it was not accepted.
+				mismatch.rejected()
+				MessagePoolReturn(transferFrameBytes)
+				continue
+			}
+
 			if ack != nil {
 				c := func() bool {
 					defer MessagePoolReturn(transferFrameBytes)
@@ -1733,10 +1753,12 @@ func (self *Client) run() {
 				switch {
 				case !accepted:
 					mismatch.rejected()
-				case unwrapped && self.plaintextReceiveDiscarded(path.SourceId):
-					// The pack is acked, then discarded by the fail-closed
-					// receive gate because this client requires encryption for
-					// this source. It was never accepted, so it is not decoded.
+				case unwrapped && packHasApplicationFrames(pack) && self.plaintextReceiveDiscarded(path.SourceId):
+					// The pack is acked, then its application frames are discarded
+					// by the fail-closed receive gate because this client requires
+					// encryption for this source. It was never accepted, so it is
+					// not decoded. A pack of encrypted control frames only is
+					// consumed by the session, not discarded, so it falls through.
 					mismatch.rejected()
 				default:
 					mismatch.decoded()

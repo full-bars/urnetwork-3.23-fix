@@ -250,7 +250,7 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 Two rules guard frames that arrive over a direct peer-to-peer lane, which is a lane opened to one peer by the stream signalling.
 
 - A frame that names the platform id or this client's own id is forged: only the platform may name the platform, and only this client names itself. The frame is dropped before decode when `p2p-forged-source-drop` is on, which is the default.
-- A frame on a lane bound to one peer that names a different source is counted, and delivered, by default (`p2p-source-binding count`). A multihop stream reaches its transit hops with the origin still in the frame, so this is normal traffic until proven otherwise. `drop` discards those frames before decode and breaks any multihop stream that rides a P2P leg. `off` delivers everything and counts nothing.
+- A frame on a lane bound to one peer that names a different source is counted and passed on by the binding rule by default (`p2p-source-binding count`). A multihop stream reaches its transit hops with the origin still in the frame, so such frames can be normal traffic. Other receive checks can still reject a passed frame, for example a plaintext frame where encryption is required. `drop` discards those frames before decode and breaks any multihop stream that rides a P2P leg. `off` counts nothing and the binding rule never drops a frame. The forged-source rule is separate. To remove both source barriers, set `p2p-forged-source-drop off` and set `p2p-source-binding` to `count` or `off`.
 
 Both settings are live through `urnet-tools set` with no restart. There is no environment variable.
 
@@ -276,10 +276,10 @@ The default `count` mode is the canary. Read it as evidence about the traffic th
 | Signal | Reading | Action |
 |---|---|---|
 | `outcome="decoded"` stays at zero for a week on a busy node | Evidence that no multihop stream rides a P2P leg here. It is not proof: a stream that never ran says nothing either | `drop` is reasonable to try on that node |
-| `outcome="decoded"` is above zero | Legitimate multihop traffic exists on a P2P leg | Keep `count`. `drop` would cut those streams |
+| `outcome="decoded"` is above zero | The node accepted frames that named a source other than the lane's peer. Some can be multihop traffic and some can be spoofing, and the count does not tell which | Find which peers send them. Keep `count`, because `drop` would cut any multihop stream |
 | `outcome="rejected"` rises | Frames that cannot be used: a peer sending plaintext where encryption is required, a corrupt frame, or a spoofed source | Nothing to do unless it climbs. Read it as a spoofing signal when the node carries no multihop traffic |
 | `outcome="dropped"` above zero while mode is `count` | A routing guard discarded a frame this node could not place | Look for stream churn on the P2P lanes |
-| `urnet_p2p_forged_source_drops_total` rises | A peer is naming the platform or this client on a direct lane, which no legitimate peer does | Inspect the peers on the P2P lanes. `p2p-forged-source-drop off` turns the drop off while you look, at the cost of accepting the frames |
+| `urnet_p2p_forged_source_drops_total` rises | A peer is naming the platform or this client on a direct lane, which no legitimate peer does | Inspect the peers on the P2P lanes. `p2p-forged-source-drop off` turns this drop off while you look, at the cost of accepting the frames. With `p2p-source-binding drop` set, the binding rule still drops them |
 
 ### Troubleshooting a counter that is not zero
 
