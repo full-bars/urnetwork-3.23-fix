@@ -551,7 +551,7 @@ func (c remoteChart) drawHalfASCII(b *tui.Buffer, s remoteSeries, pts []remotePo
 		glyph = []rune{'#', '+', '*', 'o'}[idx%4]
 	}
 	for x := 0; x < b.Width(); x++ {
-		frac := max(0, remoteCurveAt(pts, float64(2*x))) / scale
+		frac := max(0, remoteMonotoneAt(pts, float64(2*x))) / scale
 		h := int(math.Round(min(frac, 1) * float64(rows)))
 		h = min(max(h, 0), rows)
 		for i := 0; i < h; i++ {
@@ -650,9 +650,10 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int,
 	if maxH < 1 {
 		return
 	}
+	vals := remoteSmoothColumns(pts, cv.cells*2)
 	prev, prevH := cv.base, 0
 	for x := 0; x < cv.cells*2; x++ {
-		frac := max(0, remoteCurveAt(pts, float64(x))) / scale
+		frac := vals[x] / scale
 		// A curve drawn while an ease is still under it can exceed its half;
 		// clamping the fraction keeps the conversion to an int well defined.
 		// The height rounds down, so a rate under one dot lies on the
@@ -684,6 +685,95 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int,
 		}
 		prev, prevH = y, h
 	}
+}
+
+// remoteSmoothColumns is the curve's value at every dot column. The samples
+// are joined with a monotone cubic (Fritsch and Carlson), which passes through
+// every sample, never overshoots past a peak or below zero, and is flat at
+// every local peak and dip, so a burst rounds off at the top and tapers at the
+// foot. A light Gaussian, a quarter of a sample wide, then takes the
+// corners off where a burst meets the baseline. The peak label still names the
+// highest sample.
+func remoteSmoothColumns(pts []remotePoint, dots int) []float64 {
+	raw := make([]float64, dots)
+	for x := range raw {
+		raw[x] = max(0, remoteMonotoneAt(pts, float64(x)))
+	}
+	if len(pts) < 2 {
+		return raw
+	}
+	spacing := (pts[len(pts)-1].x - pts[0].x) / float64(len(pts)-1)
+	sigma := 0.25 * spacing
+	if sigma < 0.5 {
+		return raw
+	}
+	reach := int(math.Ceil(2.5 * sigma))
+	weights := make([]float64, 2*reach+1)
+	for k := range weights {
+		d := float64(k - reach)
+		weights[k] = math.Exp(-d * d / (2 * sigma * sigma))
+	}
+	out := make([]float64, dots)
+	for x := range out {
+		sum, wsum := 0.0, 0.0
+		for k, w := range weights {
+			j := x + k - reach
+			if j < 0 || j >= dots {
+				continue
+			}
+			sum += raw[j] * w
+			wsum += w
+		}
+		out[x] = max(sum/wsum, 0)
+	}
+	return out
+}
+
+// remoteMonotoneAt is the monotone cubic through pts at dot column x, held
+// flat outside the sampled range.
+func remoteMonotoneAt(pts []remotePoint, x float64) float64 {
+	n := len(pts)
+	switch {
+	case n == 0:
+		return 0
+	case n == 1 || x <= pts[0].x:
+		return pts[0].v
+	case x >= pts[n-1].x:
+		return pts[n-1].v
+	}
+	i := sort.Search(n-1, func(k int) bool { return pts[k+1].x >= x })
+	if i >= n-1 {
+		i = n - 2
+	}
+	slope := func(k int) float64 {
+		if d := pts[k+1].x - pts[k].x; d > 0 {
+			return (pts[k+1].v - pts[k].v) / d
+		}
+		return 0
+	}
+	tangent := func(k int) float64 {
+		switch {
+		case k == 0:
+			return slope(0)
+		case k == n-1:
+			return slope(n - 2)
+		}
+		a, b := slope(k-1), slope(k)
+		if a*b <= 0 {
+			return 0 // a peak, a dip or a flat stretch: the curve is level here
+		}
+		// The harmonic mean of the two slopes keeps the cubic monotone
+		// between samples (Fritsch and Butland).
+		return 2 / (1/a + 1/b)
+	}
+	h := pts[i+1].x - pts[i].x
+	if h <= 0 {
+		return pts[i].v
+	}
+	t := (x - pts[i].x) / h
+	m0, m1 := tangent(i)*h, tangent(i+1)*h
+	t2, t3 := t*t, t*t*t
+	return (2*t3-3*t2+1)*pts[i].v + (t3-2*t2+t)*m0 + (-2*t3+3*t2)*pts[i+1].v + (t3-t2)*m1
 }
 
 // draw encodes the collected dots into cells: 2 by 4 dots per braille glyph.
@@ -804,36 +894,4 @@ func remoteBucketize(samples []remoteSample, dots int, window time.Duration, win
 		out = append(out, remoteSample{at: int64(at / float64(n)), v: sum / float64(n)})
 	}
 	return out
-}
-
-// remoteCurveAt is the smoothed value at dot column x: Catmull-Rom between the
-// two samples either side of it, held flat outside the sampled range.
-func remoteCurveAt(pts []remotePoint, x float64) float64 {
-	switch {
-	case len(pts) == 0:
-		return 0
-	case len(pts) == 1:
-		return pts[0].v
-	case x <= pts[0].x:
-		return pts[0].v
-	case x >= pts[len(pts)-1].x:
-		return pts[len(pts)-1].v
-	}
-	i := sort.Search(len(pts)-1, func(k int) bool { return pts[k+1].x >= x })
-	if i >= len(pts)-1 {
-		i = len(pts) - 2
-	}
-	f := 0.0
-	if d := pts[i+1].x - pts[i].x; d > 0 {
-		f = (x - pts[i].x) / d
-	}
-	return remoteCatmull(pts, i, f)
-}
-
-// remoteCatmull is the Catmull-Rom value between pts[i] and pts[i+1] at
-// fraction f.
-func remoteCatmull(pts []remotePoint, i int, f float64) float64 {
-	at := func(k int) float64 { return pts[min(max(k, 0), len(pts)-1)].v }
-	p0, p1, p2, p3 := at(i-1), at(i), at(i+1), at(i+2)
-	return 0.5 * (2*p1 + (-p0+p2)*f + (2*p0-5*p1+4*p2-p3)*f*f + (-p0+3*p1-3*p2+p3)*f*f*f)
 }
