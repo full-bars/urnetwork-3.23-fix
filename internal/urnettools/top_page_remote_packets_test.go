@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -190,5 +191,62 @@ func TestTopMirroredPagesShareOneScale(t *testing.T) {
 		if down == 0 || up*2 > down {
 			t.Errorf("%s: the upload reaches %d rows and the download %d, want the upload well below:\n%s", id, up, down, text)
 		}
+	}
+}
+
+// remotePageWithTransports renders page 2 with the packet block and, when
+// windowed is set, a full transport window.
+func remotePageWithTransports(t *testing.T, w, h int, windowed bool) (*topModel, string) {
+	t.Helper()
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
+	m.apply(0, packetsFixture(t), nil)
+	if windowed {
+		prev, cur := mixedWindow()
+		m.transportsHistory.push(transportTestBase, prev)
+		m.transportsHistory.push(transportTestBase+nanos(60*time.Second), cur)
+	}
+	m.page = pageByID("remote")
+	b := tui.New(w, h)
+	renderFresh(m, b)
+	return m, b.String()
+}
+
+// Page 2 is the app's Client statistics card: the Transports bar and its
+// legend sit under the chart when the provider reports the transport block,
+// and the chart stands alone when it does not.
+func TestTopRemotePageCarriesTheTransportsBar(t *testing.T) {
+	for _, size := range [][2]int{{120, 40}, {80, 24}} {
+		_, text := remotePageWithTransports(t, size[0], size[1], true)
+		for _, want := range []string{"Transports", "● H3", "%", "unused"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%dx%d: page 2 is missing %q under the chart:\n%s", size[0], size[1], want, text)
+			}
+		}
+		lines := strings.Split(text, "\n")
+		chart, bar := -1, -1
+		for i, l := range lines {
+			if strings.Contains(l, "KiB/s ▼") || strings.Contains(l, "MiB/s ▼") {
+				chart = i
+			}
+			if strings.Contains(l, "Transports") && !strings.Contains(l, "[5") {
+				bar = i
+			}
+		}
+		if chart < 0 || bar <= chart {
+			t.Errorf("%dx%d: the Transports block must sit under the chart (chart row %d, block row %d)", size[0], size[1], chart, bar)
+		}
+		_, plain := remotePageWithTransports(t, size[0], size[1], false)
+		if strings.Contains(plain, "unused") || strings.Contains(plain, "● H3") {
+			t.Errorf("%dx%d: without the transport block page 2 must show the chart alone:\n%s", size[0], size[1], plain)
+		}
+	}
+}
+
+// Page 2 with the transport block under the chart, at a wide and a standard
+// size.
+func TestTopRemotePageTransportsGolden(t *testing.T) {
+	for _, size := range [][2]int{{120, 40}, {80, 24}} {
+		_, text := remotePageWithTransports(t, size[0], size[1], true)
+		assertGolden(t, fmt.Sprintf("top_page_remote_transports_%dx%d", size[0], size[1]), text)
 	}
 }
