@@ -250,12 +250,16 @@ loginctl() { case "$1" in show-user) printf 'yes\\n';; *) echo ENABLE_CALLED;; e
             (root / "loginctl").write_text("#!/bin/sh\ncase \"$1\" in show-user) [ -f \"$STATE\" ] && echo yes || echo no;; enable-linger) echo user >> \"$LOG\"; exit 1;; esac\n")
             (root / "sudo").write_text("#!/bin/sh\necho \"$*\" >> \"$LOG\"\n[ \"$1\" = -n ] && touch \"$STATE\"\n")
             for f in root.iterdir(): f.chmod(0o755)
-            env = dict(os.environ, PATH=tmp + os.pathsep + os.environ["PATH"], LOG=str(root / "log"), STATE=str(root / "state"))
+            # The opt-in variable is set only for the opt-in case, so a runner
+            # that exports it cannot change the default path.
+            env = {k: v for k, v in os.environ.items() if k != "URNET_INSTALL_LINGER"}
+            env.update(PATH=tmp + os.pathsep + os.environ["PATH"], LOG=str(root / "log"), STATE=str(root / "state"))
             harness = """FORCE=1
 pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
 pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
 """ + function("installer_enable_linger") + function("installer_linger_summary") + "\ninstaller_enable_linger alice install || :; installer_linger_summary alice\n"
             for opt in (False, True):
+                env.pop("URNET_INSTALL_LINGER", None)
                 if opt: env["URNET_INSTALL_LINGER"] = "sudo"
                 result = subprocess.run(["sh", "-c", harness], env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0)
