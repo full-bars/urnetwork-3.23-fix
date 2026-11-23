@@ -31,6 +31,16 @@ var (
 		}
 		return w, h, true
 	}
+	// logoStderrIsTerminal and logoStderrSize are the same checks for stderr,
+	// where the hand-written help pages are written.
+	logoStderrIsTerminal = func() bool { return term.IsTerminal(int(os.Stderr.Fd())) }
+	logoStderrSize       = func() (int, int, bool) {
+		w, h, err := term.GetSize(int(os.Stderr.Fd()))
+		if err != nil || w <= 0 || h <= 0 {
+			return 0, 0, false
+		}
+		return w, h, true
+	}
 	logoGetenv = os.Getenv
 	// logoPrefsPath is the file that holds the ui.logo setting. It is the same
 	// key=value file that remembers the top preferences.
@@ -49,7 +59,11 @@ type logoMode struct {
 
 // logoAllowed reports whether the logo may be drawn for this run. The mode, the
 // flag, the environment, the saved setting and stdout all have to agree.
-func logoAllowed(m logoMode) bool {
+func logoAllowed(m logoMode) bool { return logoAllowedOn(m, logoStdoutIsTerminal) }
+
+// logoAllowedOn is logoAllowed for the stream the output goes to: the artwork
+// follows the terminal that receives it.
+func logoAllowedOn(m logoMode, isTerminal func() bool) bool {
 	if logoOffByFlag || m.Plain || m.JSON || m.Brief {
 		return false
 	}
@@ -59,7 +73,7 @@ func logoAllowed(m logoMode) bool {
 	if !loadTopSettings(logoPrefsPath()).logoOn() {
 		return false
 	}
-	return logoStdoutIsTerminal()
+	return isTerminal()
 }
 
 // stripLogoFlag removes --no-logo from the arguments and records it. The flag is
@@ -103,7 +117,12 @@ func logoCapabilities() brand.Capabilities {
 // logoArt returns the named artwork rendered for this terminal and the cell
 // width it occupies, or "" when the terminal is too narrow or too short for it.
 func logoArt(name string, minWidth int) (string, int) {
-	w, h, ok := logoStdoutSize()
+	return logoArtOn(name, minWidth, logoStdoutSize)
+}
+
+// logoArtOn is logoArt for the terminal that size describes.
+func logoArtOn(name string, minWidth int, size func() (int, int, bool)) (string, int) {
+	w, h, ok := size()
 	if !ok || w < minWidth {
 		return "", 0
 	}
@@ -164,10 +183,15 @@ func printStatusLogo(m logoMode) {
 // logoParagraph puts the small icon beside a command's first help paragraph.
 // It is the one hook the per-command help template needs.
 func logoParagraph(text string) string {
-	if !logoAllowed(logoMode{}) {
+	return logoParagraphOn(text, logoStdoutIsTerminal, logoStdoutSize)
+}
+
+// logoParagraphOn is logoParagraph for the stream the text is written to.
+func logoParagraphOn(text string, isTerminal func() bool, size func() (int, int, bool)) string {
+	if !logoAllowedOn(logoMode{}, isTerminal) {
 		return text
 	}
-	art, cols := logoIcon8()
+	art, cols := logoArtOn("icon-flat-8x4", 40, size)
 	if art == "" {
 		return text
 	}
@@ -193,11 +217,12 @@ func init() {
 }
 
 // logoHelp is logoParagraph for a hand-written help page: the icon goes
-// beside the page's first paragraph and the rest follows unchanged.
+// beside the page's first paragraph and the rest follows unchanged. These pages
+// are written to stderr, so the terminal check and the width come from stderr.
 func logoHelp(page string) string {
 	head, rest, ok := strings.Cut(page, "\n\n")
 	if !ok {
-		return logoParagraph(page)
+		return logoParagraphOn(page, logoStderrIsTerminal, logoStderrSize)
 	}
-	return logoParagraph(head) + "\n\n" + rest
+	return logoParagraphOn(head, logoStderrIsTerminal, logoStderrSize) + "\n\n" + rest
 }
