@@ -1167,10 +1167,13 @@ test_install_logo_columns() {
 
     # The artwork itself: six rows, none wider than the narrowest terminal it
     # is offered to.
-    local widest=0 line
+    local widest=0 line rows
+    rows="$(mktemp)"
+    sed -n "/^install_logo ()$/,/^URNETWORK_WORDMARK$/p" scripts/Provider_Install_Linux.sh | sed -n '8,13p' > "$rows"
     while IFS= read -r line; do
         [ "${#line}" -gt "$widest" ] && widest="${#line}"
-    done < <(sed -n "/^install_logo ()$/,/^URNETWORK_WORDMARK$/p" scripts/Provider_Install_Linux.sh | sed -n '8,13p')
+    done < "$rows"
+    rm -f "$rows"
     assert_eq "1" "$([ "$widest" -ge 74 ] && [ "$widest" -le 80 ] && printf 1 || printf 0)" "the embedded wordmark is six rows of at most 80 columns"
 }
 test_install_logo_columns
