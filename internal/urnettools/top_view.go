@@ -463,7 +463,11 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 		// highest reading in each column wins when they are more.
 		n := m.graphColumns(b.Width(), samples, scale)
 		samples = spreadSeries(sr.at, sr.spans, samples, sr.anchor, topGraphWindows[sr.level], n)
-		sr.capacity, sr.live = len(samples), false
+		// The spread series is already one value per column on its own time
+		// axis. The graph must not bucket it again on an absolute index: the
+		// anchor here is a nanosecond time, which loses its precision as a
+		// float64 sample index and folded the whole window into one column.
+		sr.anchor, sr.capacity, sr.live = 0, len(samples), false
 	} else if sr.columns {
 		n := min(m.graphColumns(b.Width(), samples, scale), len(samples))
 		samples = samples[len(samples)-n:]

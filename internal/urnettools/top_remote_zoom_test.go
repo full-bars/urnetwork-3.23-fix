@@ -125,3 +125,72 @@ func TestRemoteZoomGoldens(t *testing.T) {
 		}
 	}
 }
+
+// graphDataColumns counts the columns of a graph box that carry any plotted
+// cell: braille or block glyphs right of the axis.
+func graphDataColumns(b *tui.Buffer, r tui.Rect) int {
+	n := 0
+	for x := r.X + 1; x < r.X+r.W-1; x++ {
+		for y := r.Y + 1; y < r.Y+r.H-1; y++ {
+			c := b.Cell(x, y).Rune
+			if (c > 0x2800 && c <= 0x28ff) || (c >= 0x2581 && c <= 0x2588) {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
+// The Billable and Total graphs of page 1 fill their plot at every zoom level
+// over the recorded series. The window series is placed on its own time axis,
+// so it must not be bucketed again on an absolute time index: a nanosecond
+// timestamp as that index lost its precision in float64 and folded the whole
+// window into one column.
+func TestTopWindowGraphsFillThePlot(t *testing.T) {
+	long := recordedReplies(t, "top_remote_recorded_330s.jsonl")
+	short := recordedReplies(t, "top_remote_recorded_150s.jsonl")
+	for level, name := range []string{"10s", "1m", "5m", "15m"} {
+		replies := short
+		if level >= 2 {
+			replies = long
+		}
+		for _, size := range [][2]int{{120, 40}, {80, 24}} {
+			m, _ := replayRemote(t, replies, level, size[0], size[1])
+			m.page = 0
+			b := tui.New(size[0], size[1])
+			renderFresh(m, b)
+			// The graph band is one region. A second graph starts at its own
+			// title row, so the band is split there.
+			var boxes []tui.Rect
+			for _, r := range m.regions {
+				if r.Name == "box:graph" {
+					boxes = append(boxes, r.Rect)
+				}
+			}
+			for _, r := range m.regions {
+				if r.Name == "title:graph" && len(boxes) == 1 && r.Rect.Y > boxes[0].Y {
+					band := boxes[0]
+					boxes = []tui.Rect{
+						{X: band.X, Y: band.Y, W: band.W, H: r.Rect.Y - band.Y},
+						{X: band.X, Y: r.Rect.Y, W: band.W, H: band.Y + band.H - r.Rect.Y},
+					}
+				}
+			}
+			if len(boxes) == 0 {
+				t.Fatalf("%s %dx%d: no graph on page 1:\n%s", name, size[0], size[1], b.String())
+			}
+			for _, r := range boxes {
+				// The data covers the whole window at 10s and 1m, and the
+				// newest 150 or 330 seconds at 5m and 15m.
+				want := (r.W - 12) / 3
+				if level == 3 {
+					want = (r.W - 12) / 4
+				}
+				if got := graphDataColumns(b, r); got < want {
+					t.Errorf("%s %dx%d: a graph draws data in %d columns, want at least %d:\n%s", name, size[0], size[1], got, want, b.String())
+				}
+			}
+		}
+	}
+}
