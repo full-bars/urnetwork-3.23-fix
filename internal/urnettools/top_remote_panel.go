@@ -49,6 +49,9 @@ func remotePalette(th tui.Theme) (bytes, packets tui.Style) {
 	if th.Name == "colorblind" {
 		return th.OK, th.Warn
 	}
+	if th.Name == "neon" {
+		return tui.Style{FG: th.SeriesBytesFG}, tui.Style{FG: th.SeriesPacketsFG}
+	}
 	return tui.Style{FG: tui.Xterm(120)}, tui.Style{FG: tui.Xterm(213)}
 }
 

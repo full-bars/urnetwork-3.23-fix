@@ -277,6 +277,18 @@ Billable traffic is drawn above a dim centre line and total traffic below it. Ea
 
 The provider reports billable and total bytes, but no separate upload and download counters and no packet counts. The panel therefore draws one curve per side and labels the sides `billable` and `total` instead of `up` and `down`. A provider that does not send the total figures gets `total not reported` in the footer and a billable curve above the line.
 
+## Colour theme
+
+Press `m` and step the `Theme` row, or name a theme on the command line with `--theme <name>`. The row applies the theme to the screen behind the menu as you step, so the screen is the preview. The choice is saved in `~/.config/urnet-tools/top.conf` as `theme` and the next start uses it. `urnet-tools top --theme neon` saves the same way.
+
+The names are `default`, `nord`, `gruvbox`, `dracula`, `solarized-dark`, `tokyo-night`, `high-contrast`, `colorblind`, `neon` and `mono`. `default` follows the terminal's own palette and is the choice on a fresh install. `mono` is what `NO_COLOR` or a dumb terminal selects, and that environment choice outranks a saved one.
+
+`neon` is built from the URnetwork brand palette: green `#87FB67` for traffic, pale lime `#EFF7BB` for warnings, coral `#FF6F7A` for errors and packets, and blue `#007ACC` and `#0099FF` for IPv6 and H1+. It is drawn for a dark terminal. The theme carries its own approximation for a 256 colour terminal and its own base 16 colours, so the accents keep their hue where the terminal cannot show truecolor.
+
+```bash
+urnet-tools top --theme neon
+```
+
 ## Heatmap style
 
 The Proxies panel shows a heatmap when the window has room. The count for the direct connection is separate from the proxy counts. Hover or click a cell to see its addresses, states and UDP check results (`ok`, `no UDP`, `mismatch`, `unknown` or `unchecked`). The direct connection appears as `direct (this host)`. The proxy address contains only the proxy host and port. When available, the popup also shows the cached TCP and UDP exit addresses and their IP families. The popup shows traffic since the previous sample, normally about one second, and lifetime billable and total traffic in each direction. Lifetime values resume from the saved per-proxy counters. A question mark means the value is unavailable. The counters cover accepted TCP and UDP traffic over IPv4 and IPv6, including the direct connection. Proxied UDP to IPv6 destinations is relayed only through proxies whose IPv6 check measured TCP and UDP with matching exit addresses. Other proxies refuse it at once.

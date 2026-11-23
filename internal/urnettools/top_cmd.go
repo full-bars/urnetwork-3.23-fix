@@ -33,7 +33,7 @@ func cmdTop(args []string) error {
 	// --demo is hidden: it draws synthetic snapshots so the screen can be seen
 	// on a box with no provider. It is peeled off before the real parsers.
 	demo, args := stripDemoFlag(args)
-	interval, copyOnQuit, plain, targetArgs, err := parseTopFlags(args)
+	interval, copyOnQuit, plain, theme, targetArgs, err := parseTopFlags(args)
 	if err != nil {
 		return err
 	}
@@ -95,6 +95,21 @@ func cmdTop(args []string) error {
 	m.themeLocked = th.ASCII
 	m.settingsPath = topSettingsPath()
 	m.applySettings(loadTopSettings(m.settingsPath))
+
+	// A --theme flag overrides the saved preference. A saved theme takes effect
+	// at once, so the choice applies live without a restart.
+	if theme != "" {
+		if neonTheme, ok := tui.ThemeByName(theme); ok {
+			m.theme = neonTheme
+			m.savedTheme = theme
+			if err := saveTopSettings(m.settingsPath, m.settings()); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("unknown theme %q (try one of: %s)", theme, strings.Join(tui.ThemeNames(), ", "))
+		}
+	}
+
 	m.copyOnQuit, m.copyPlain = copyOnQuit, plain
 	m.clip = newTopClipboard(scr)
 	src := topSourceFn()
@@ -142,10 +157,10 @@ func hasNoMouseFlag(args []string) bool {
 	return false
 }
 
-// parseTopFlags pulls --interval, --no-mouse, --copy and --plain out of args, leaving the
-// target flags for the strict target parser. It accepts a Go duration (500ms,
-// 2s) or plain seconds for --interval.
-func parseTopFlags(args []string) (interval time.Duration, copyOnQuit, plain bool, rest []string, err error) {
+// parseTopFlags pulls --interval, --no-mouse, --copy, --plain and --theme out
+// of args, leaving the target flags for the strict target parser. It accepts a
+// Go duration (500ms, 2s) for --interval.
+func parseTopFlags(args []string) (interval time.Duration, copyOnQuit, plain bool, theme string, rest []string, err error) {
 	interval = topDefaultInterval
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -155,7 +170,7 @@ func parseTopFlags(args []string) (interval time.Duration, copyOnQuit, plain boo
 			continue
 		case a == "--interval":
 			if i+1 >= len(args) {
-				return 0, false, false, nil, errors.New("--interval needs a value, for example --interval 500ms")
+				return 0, false, false, "", nil, errors.New("--interval needs a value, for example --interval 500ms")
 			}
 			i++
 			val = args[i]
@@ -167,6 +182,16 @@ func parseTopFlags(args []string) (interval time.Duration, copyOnQuit, plain boo
 		case a == "--plain":
 			plain = true
 			continue
+		case a == "--theme":
+			if i+1 >= len(args) {
+				return 0, false, false, "", nil, errors.New("--theme needs a value, for example --theme neon")
+			}
+			i++
+			theme = args[i]
+			continue
+		case strings.HasPrefix(a, "--theme="):
+			theme = strings.TrimPrefix(a, "--theme=")
+			continue
 		default:
 			rest = append(rest, a)
 			continue
@@ -175,14 +200,14 @@ func parseTopFlags(args []string) (interval time.Duration, copyOnQuit, plain boo
 		if perr != nil {
 			secs, ferr := strconv.ParseFloat(val, 64)
 			if ferr != nil {
-				return 0, false, false, nil, fmt.Errorf("--interval %q is not a duration (try 500ms or 2s)", val)
+				return 0, false, false, "", nil, fmt.Errorf("--interval %q is not a duration (try 500ms or 2s)", val)
 			}
 			d = time.Duration(secs * float64(time.Second))
 		}
 		if d < topMinInterval {
-			return 0, false, false, nil, fmt.Errorf("--interval must be at least %s", topMinInterval)
+			return 0, false, false, "", nil, fmt.Errorf("--interval must be at least %s", topMinInterval)
 		}
 		interval = d
 	}
-	return interval, copyOnQuit, plain, rest, nil
+	return interval, copyOnQuit, plain, theme, rest, nil
 }

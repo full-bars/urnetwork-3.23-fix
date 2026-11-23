@@ -1,5 +1,10 @@
 package tui
 
+import (
+	"os"
+	"strings"
+)
+
 // BorderSet is the set of runes a Box draws its frame with.
 type BorderSet struct {
 	H, V, TL, TR, BL, BR rune
@@ -38,6 +43,11 @@ type Theme struct {
 	// differs by its symbol too. Zero means the theme has no symbol and the
 	// caller falls back to its own.
 	IconOK, IconWarn, IconBad rune
+	// SeriesBytesFG, SeriesPacketsFG, SeriesV6FG and SeriesH1FG are the
+	// graph curve colours: green for byte traffic, pink for packets, blue for
+	// IPv6 and H1+. Zero means the theme has no fixed palette and callers fall
+	// back to their own colours.
+	SeriesBytesFG, SeriesPacketsFG, SeriesV6FG, SeriesH1FG Color
 }
 
 // DefaultTheme uses the 16 base colors, which every color terminal maps to
@@ -190,7 +200,118 @@ var themeBuilders = []struct {
 			IconBad:  '✗',
 		}
 	}},
+	{"neon", func() Theme {
+		return NeonThemeFromEnv(os.Getenv)
+	}},
 	{"mono", MonoTheme},
+}
+
+// Depth is the colour depth of the terminal.
+type Depth int
+
+const (
+	// DepthTrue is 24-bit colour.
+	DepthTrue Depth = iota
+	// Depth256 is the xterm 256 colour palette.
+	Depth256
+	// Depth16 is the base ANSI palette.
+	Depth16
+)
+
+// neonRole is one colour of the neon theme at every depth: the truecolor value
+// the theme is designed in, the xterm 256 entry nearest to it (a cube or gray
+// cell) and the base ANSI index nearest to it. The 256 entry is spelled out so
+// a 256 colour terminal shows the intended hue rather than whatever automatic
+// downsampling picks for it.
+type neonRole struct {
+	hex  string
+	x256 uint8
+	a16  uint8
+}
+
+// neonPalette is the URnetwork brand palette per role on the near black
+// background the theme is designed for: green #87FB67, pale lime #EFF7BB,
+// coral #FF6F7A, blue #007ACC and #0099FF, and two grays for dim text and
+// borders. The green carries traffic, the coral packets, and the blues IPv6
+// and H1+.
+var neonPalette = struct {
+	ok, warn, bad, dim, accent, graph, border neonRole
+	bytes, packets, v6, h1                    neonRole
+}{
+	ok:      neonRole{"#87FB67", 119, 10},
+	warn:    neonRole{"#EFF7BB", 229, 11},
+	bad:     neonRole{"#FF6F7A", 204, 9},
+	dim:     neonRole{"#8B949E", 246, 8},
+	accent:  neonRole{"#0099FF", 33, 14},
+	graph:   neonRole{"#87FB67", 119, 10},
+	border:  neonRole{"#7D8A9E", 103, 8},
+	bytes:   neonRole{"#87FB67", 119, 10},
+	packets: neonRole{"#FF6F7A", 204, 13},
+	v6:      neonRole{"#007ACC", 32, 6},
+	h1:      neonRole{"#0099FF", 33, 14},
+}
+
+func (r neonRole) color(depth Depth) Color {
+	switch depth {
+	case Depth256:
+		return Xterm(r.x256)
+	case Depth16:
+		return Ansi(r.a16)
+	}
+	return hex(r.hex)
+}
+
+// NeonTheme returns the URnetwork Neon theme at truecolor depth.
+func NeonTheme() Theme { return NeonThemeDepth(DepthTrue) }
+
+// NeonThemeDepth returns the neon theme in the best depth the terminal can
+// show, so the accents stay the intended hue on a 256 or 16 colour terminal
+// instead of being left to automatic downsampling.
+func NeonThemeDepth(depth Depth) Theme {
+	p := neonPalette
+	return Theme{
+		Name:            "neon",
+		OK:              Style{FG: p.ok.color(depth)},
+		Warn:            Style{FG: p.warn.color(depth)},
+		Bad:             Style{FG: p.bad.color(depth)}.With(AttrBold),
+		Dim:             Style{FG: p.dim.color(depth)},
+		Accent:          Style{FG: p.accent.color(depth)}.With(AttrBold),
+		Graph:           Style{FG: p.graph.color(depth)},
+		Border:          Style{FG: p.border.color(depth)},
+		Frame:           BorderRounded,
+		IconOK:          '•',
+		IconWarn:        '!',
+		IconBad:         '✗',
+		SeriesBytesFG:   p.bytes.color(depth),
+		SeriesPacketsFG: p.packets.color(depth),
+		SeriesV6FG:      p.v6.color(depth),
+		SeriesH1FG:      p.h1.color(depth),
+	}
+}
+
+// NeonThemeFromEnv returns the neon theme in the depth the terminal reports.
+func NeonThemeFromEnv(getenv func(string) string) Theme {
+	return NeonThemeDepth(DepthFromEnv(getenv))
+}
+
+// DepthFromEnv reads the depth a terminal advertises: COLORTERM truecolor or
+// 24bit means truecolor, a TERM naming direct, truecolor, 24bit or 256 colours
+// says the same, an empty TERM means mono, and any other TERM is assumed to
+// have the 256 colour palette that the base terminals ship with.
+func DepthFromEnv(getenv func(string) string) Depth {
+	if v := strings.ToLower(getenv("COLORTERM")); v == "truecolor" || v == "24bit" {
+		return DepthTrue
+	}
+	term := strings.ToLower(getenv("TERM"))
+	switch {
+	case strings.Contains(term, "direct"), strings.Contains(term, "truecolor"), strings.Contains(term, "24bit"):
+		return DepthTrue
+	case strings.Contains(term, "256"):
+		return Depth256
+	case term == "":
+		return Depth16
+	}
+	return Depth256
 }
 
 // ThemeNames lists the built-in themes in the order the menu cycles them.
