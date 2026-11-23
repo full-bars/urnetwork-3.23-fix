@@ -2557,6 +2557,20 @@ installer_linger_summary ()
     return 0
 }
 
+# installer_linger_final_check prints the read-only lingering summary for a run
+# that has nothing to install, so a rerun that finds the installed version
+# current still tells a provider with lingering off. It never prompts, never
+# runs sudo, never reinstalls, and it completes with status 0 so it cannot
+# change the installer's own exit status.
+installer_linger_final_check ()
+{
+    [ "${has_systemd:-0}" -eq 1 ] || return 0
+    linger_final_user="$(logname 2>/dev/null || printf '%s' "${SUDO_USER:-}")"
+    [ -n "$linger_final_user" ] || linger_final_user="$(id -un)"
+    installer_linger_summary "$linger_final_user"
+    return 0
+}
+
 # Distro-agnostic creation of a dedicated unprivileged user, then finish the
 # install in that user's systemd context. Called only from the interactive
 # root path; exits the script.
@@ -2976,6 +2990,7 @@ do_install ()
                 pr_info "Version %s differs from installed version %s, continuing upgrade" "$version_to_install" "$installed_version"
             else
                 pr_info "Installed version %s is already up-to-date" "$installed_version"
+                installer_linger_final_check
                 exit 0
             fi
         else
@@ -2988,6 +3003,7 @@ do_install ()
                     pr_info "Version %s differs from installed version %s, continuing upgrade" "$version_to_install" "$installed_version"
                 else
                     pr_info "Installed version %s is already up-to-date" "$installed_version"
+                    installer_linger_final_check
                     exit 0
                 fi
             else
@@ -2998,6 +3014,7 @@ do_install ()
                     pr_info "Continuing upgrade"
                 else
                     pr_info "Installed version is up-to-date"
+                    installer_linger_final_check
                     exit 0
                 fi
             fi

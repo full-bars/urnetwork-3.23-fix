@@ -169,6 +169,58 @@ sudo() { echo "sudo $*" >> "$ROOT/log"; touch "$ROOT/state"; }
         log = (root / "log").read_text().splitlines() if (root / "log").exists() else []
         return proc.returncode, out, log
 
+    def test_linger_current_version_rerun_reports_the_summary(self):
+        for state, want, unexpected in (
+            ("no", "WARNING: lingering is OFF", "Systemd lingering is on"),
+            ("yes", "Systemd lingering is on", "WARNING:"),
+        ):
+            with self.subTest(state=state):
+                harness = '''
+has_systemd=1
+STATE_ONLY=1
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+loginctl() { case "$1" in show-user) echo "$LINGER_STATE";; *) echo ENABLE_CALLED;; esac; }
+sudo() { echo SUDO_CALLED; }
+''' + function("installer_linger_summary") + function("installer_linger_final_check") + '\ninstaller_linger_final_check\nexit $?\n'
+                result = subprocess.run(["sh", "-c", harness], env=dict(os.environ, LINGER_STATE=state), text=True, capture_output=True)
+                # The rerun keeps the exit status it had, and it never prompts,
+                # never runs sudo and never changes the setting.
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(want, result.stdout)
+                self.assertNotIn(unexpected, result.stdout)
+                self.assertNotIn("SUDO_CALLED", result.stdout)
+                self.assertNotIn("ENABLE_CALLED", result.stdout)
+
+    def test_linger_current_version_rerun_without_loginctl_or_systemd(self):
+        harness = '''
+has_systemd=1
+command() { if [ "$1" = -v ] && [ "$2" = loginctl ]; then return 1; fi; builtin command "$@"; }
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+''' + function("installer_linger_summary") + function("installer_linger_final_check") + '\ninstaller_linger_final_check\nexit $?\n'
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("WARNING: lingering is OFF", result.stdout)
+
+        # No systemd means lingering does not apply, so a rerun says nothing.
+        harness = '''
+has_systemd=0
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+loginctl() { echo no; }
+''' + function("installer_linger_summary") + function("installer_linger_final_check") + '\ninstaller_linger_final_check\nexit $?\n'
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("lingering", result.stdout)
+
+    def test_linger_current_version_exits_run_the_check(self):
+        lines = INSTALLER.read_text().splitlines()
+        calls = [i for i, line in enumerate(lines) if line.strip() == "installer_linger_final_check"]
+        self.assertEqual(len(calls), 3, f"expected the check before each of the three no-op exits, found {len(calls)}")
+        for i in calls:
+            self.assertEqual(lines[i + 1].strip(), "exit 0", f"line {i + 2} does not exit after the check")
+
     def test_linger_without_sudo_gives_root_command(self):
         harness = r"""
 command() { if [ "$1" = -v ] && [ "$2" = sudo ]; then return 1; fi; builtin command "$@"; }
