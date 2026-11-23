@@ -30,6 +30,131 @@ def function(name):
 
 
 class PrivilegedSteps(unittest.TestCase):
+    def test_auto_start_refuses_when_linger_is_off(self):
+        harness = r"""
+pr_info() { :; }
+pr_err() { fmt="$1"; shift; printf "$fmt\n" "$@"; }
+id() { echo alice; }
+loginctl() { echo no; }
+systemctl() { echo "$*" >> "$LOG"; return 1; }
+""" + function("toggle_auto_start") + "\ntoggle_auto_start on\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "calls"
+            result = subprocess.run(["sh", "-c", harness], env=dict(os.environ, LOG=str(log)), text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("linger is not enabled for alice; run sudo loginctl enable-linger alice before enabling this unit", result.stdout)
+            self.assertFalse(log.exists() and "--user enable urnetwork.service" in log.read_text())
+
+    def test_linger_interactive_answers(self):
+        for answer in ("y", "n", ""):
+            with self.subTest(answer=answer), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "answer").write_text(answer + "\n")
+                harness = r"""
+linger_tty="$ROOT/answer"
+pr_info() { fmt="$1"; shift; printf "$fmt\n" "$@"; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\n" "$@"; }
+loginctl() { case "$1" in show-user) [ -f "$ROOT/state" ] && echo yes || echo no;; enable-linger) echo user >> "$ROOT/log"; return 1;; esac; }
+sudo() { echo "sudo $*" >> "$ROOT/log"; touch "$ROOT/state"; }
+""" + function("installer_enable_linger") + function("installer_linger_summary") + "\ninstaller_enable_linger alice install || :; installer_linger_summary alice\n"
+                master, slave = pty.openpty()
+                try:
+                    result = subprocess.run(["sh", "-c", harness], stdin=slave, stdout=slave, stderr=slave, env=dict(os.environ, ROOT=tmp), timeout=10)
+                    os.close(slave)
+                    slave = -1
+                    output = b""
+                    while True:
+                        try:
+                            chunk = os.read(master, 4096)
+                        except OSError:
+                            break
+                        if not chunk:
+                            break
+                        output += chunk
+                finally:
+                    if slave >= 0:
+                        os.close(slave)
+                    os.close(master)
+                text = output.decode()
+                self.assertEqual(result.returncode, 0, text)
+                self.assertIn("Run it now? [y/N]", text)
+                log = (root / "log").read_text().splitlines()
+                if answer == "y":
+                    self.assertEqual(log, ["user", "sudo loginctl enable-linger alice"])
+                    self.assertIn("lingering is on for alice", text)
+                else:
+                    self.assertEqual(log, ["user"])
+                    self.assertIn("WARNING: lingering is OFF for alice", text)
+
+    def test_linger_without_sudo_gives_root_command(self):
+        harness = r"""
+command() { if [ "$1" = -v ] && [ "$2" = sudo ]; then return 1; fi; builtin command "$@"; }
+pr_info() { fmt="$1"; shift; printf "$fmt\n" "$@"; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\n" "$@"; }
+loginctl() { [ "$1" = show-user ] && { echo no; return 0; }; return 1; }
+""" + function("installer_enable_linger") + function("installer_linger_summary") + "\ninstaller_enable_linger alice install || :; installer_linger_summary alice\n"
+        result = subprocess.run(["bash", "-c", harness], text=True, capture_output=True)
+        self.assertIn("Run as root: loginctl enable-linger alice", result.stdout)
+        self.assertIn("WARNING: lingering is OFF for alice", result.stdout)
+        self.assertNotIn("Run it now?", result.stdout)
+
+    def test_linger_already_enabled_is_not_changed(self):
+        harness = """
+pr_info() { printf '%s\\n' "$*"; }
+pr_warn() { printf '%s\\n' "$*"; }
+loginctl() { case "$1" in show-user) printf 'yes\\n';; *) echo ENABLE_CALLED;; esac; }
+""" + function("installer_enable_linger") + "\ninstaller_enable_linger alice\n"
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("ENABLE_CALLED", result.stdout)
+        self.assertIn("already enabled", result.stdout)
+
+    def test_linger_noninteractive_and_opt_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "loginctl").write_text("#!/bin/sh\ncase \"$1\" in show-user) [ -f \"$STATE\" ] && echo yes || echo no;; enable-linger) echo user >> \"$LOG\"; exit 1;; esac\n")
+            (root / "sudo").write_text("#!/bin/sh\necho \"$*\" >> \"$LOG\"\n[ \"$1\" = -n ] && touch \"$STATE\"\n")
+            for f in root.iterdir(): f.chmod(0o755)
+            env = dict(os.environ, PATH=tmp + os.pathsep + os.environ["PATH"], LOG=str(root / "log"), STATE=str(root / "state"))
+            harness = """FORCE=1
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+""" + function("installer_enable_linger") + function("installer_linger_summary") + "\ninstaller_enable_linger alice install || :; installer_linger_summary alice\n"
+            for opt in (False, True):
+                if opt: env["URNET_INSTALL_LINGER"] = "sudo"
+                result = subprocess.run(["sh", "-c", harness], env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0)
+                log = (root / "log").read_text()
+                if opt:
+                    self.assertIn("-n loginctl enable-linger alice", log)
+                    self.assertIn("lingering is on for alice", result.stdout)
+                    self.assertNotIn("WARNING:", result.stdout)
+                else:
+                    self.assertEqual(log.strip(), "user")
+                    self.assertIn("WARNING: lingering is OFF for alice", result.stdout)
+                    self.assertNotIn("Run it now?", result.stdout)
+                (root / "log").unlink()
+
+    def test_linger_user_enable_is_verified(self):
+        harness = """state=no
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+loginctl() { case "$1" in show-user) echo "$state";; enable-linger) state=yes;; esac; }
+""" + function("installer_enable_linger") + function("installer_linger_summary") + "\ninstaller_enable_linger alice install; installer_linger_summary alice\n"
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("lingering is on for alice", result.stdout)
+        self.assertNotIn("WARNING:", result.stdout)
+
+    def test_linger_missing_loginctl_warns_in_summary(self):
+        harness = """command() { [ "$1" != -v ] || [ "$2" != loginctl ]; }
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+""" + function("installer_enable_linger") + function("installer_linger_summary") + "\ninstaller_enable_linger alice install || :; installer_linger_summary alice\n"
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertIn("install it, then run: sudo loginctl enable-linger alice", result.stdout)
+        self.assertIn("WARNING: lingering is OFF for alice", result.stdout)
+
     def test_optimize_dispatch_preserves_approval_through_sudo(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -190,7 +315,7 @@ loginctl() { printf 'stub loginctl failure\\n' >&2; return 1; }
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("stub loginctl failure", result.stderr)
         self.assertIn("sudo loginctl enable-linger alice", result.stdout)
-        self.assertIn("may stop on logout", result.stdout)
+        self.assertIn("STOP when your last login session closes", result.stdout)
 
     def test_tool_copy_failure_preserves_backup_and_reports_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -451,14 +576,15 @@ pr_info() { :; }; pr_warn() { :; }
         self.assertIn("Could not set log modes; run: sudo chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err", result.stdout)
         self.assertIn("chmod log denied", result.stderr)
 
-    def test_linger_success_is_silent(self):
+    def test_linger_success_is_verified(self):
         harness = '''
 pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
-loginctl() { return 0; }
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+loginctl() { [ "$1" != show-user ] || printf "yes\\n"; }
 ''' + function("installer_enable_linger") + '\ninstaller_enable_linger alice\n'
         result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout + result.stderr, "")
+        self.assertIn("already enabled", result.stdout)
 
     def _run_optimize_harness(self, tmp, env_vars=None):
         if env_vars is None:
@@ -753,8 +879,7 @@ chown() {
     def test_ensure_extender_cap_failure_exposes_error(self):
         harness = '''
 uname() { printf 'Linux\n'; }
-cap_bindable() { return 0; }
-cap_present() { return 1; }
+awk() { case "$*" in *CapBnd*) return 0 ;; *) return 1 ;; esac; }
 setcap() { printf 'setcap: Operation not permitted\n' >&2; return 1; }
 ''' + function("ensure_extender_cap") + '\nensure_extender_cap /opt/urnetwork/bin/urnetwork\n'
         result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)

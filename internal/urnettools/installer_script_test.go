@@ -26,7 +26,7 @@ func TestInstallerScriptDoInstallBodyNotDuplicated(t *testing.T) {
 		`pr_info "Fetching release information for tag`,
 		`ensure_tools_on_path "$install_path"`,
 		`install_systemd_units
-    fi`,
+        if [ -n "$installer_linger_user" ]`,
 		`pr_info "Installation complete`,
 	} {
 		if n := strings.Count(script, marker); n != 1 {
@@ -1351,6 +1351,8 @@ func runLinuxInstaller(t *testing.T, opts installerHarnessOpts) installerHarness
 	fnVerify := extractShellFunc(t, script, "verify_sha256_file")
 	fnSanitize := extractShellFunc(t, script, "sanitize_restart_dropins")
 	fnInstallSystemd := extractShellFunc(t, script, "install_systemd_units")
+	fnLinger := extractShellFunc(t, script, "installer_enable_linger")
+	fnLingerSummary := extractShellFunc(t, script, "installer_linger_summary")
 	fnDoInstall := extractShellFunc(t, script, "do_install")
 	if fnDoInstall == "" {
 		t.Fatal("could not extract do_install from Linux script")
@@ -1381,7 +1383,8 @@ func runLinuxInstaller(t *testing.T, opts installerHarnessOpts) installerHarness
 pr_err() { printf "[ERROR] %%s\n" "$*" >&2; }
 pr_warn() { printf "[WARN] %%s\n" "$*" >&2; }
 pr_info() { printf "[INFO] %%s\n" "$*"; }
-sudo() { "$@"; }
+sudo() { echo "unexpected sudo" >&2; return 1; }
+loginctl() { case "$1" in show-user) echo no;; *) return 1;; esac; }
 install_downloader() { return 0; }
 install_json_parser() { return 0; }
 openrc_maybe_redirect_install_path() { return 0; }
@@ -1460,6 +1463,7 @@ api_url="http://mock/releases/tags/$tag"
 arch="amd64"
 has_systemd=1
 has_openrc=0
+FORCE=1
 FAIL_RESTART=%q
 FAIL_CP=%q
 FAIL_MV=%q
@@ -1471,7 +1475,7 @@ systemd_units_stopped=1
 do_install
 `, tag, op, installPath, tempDir, failRestartVal, failCpVal, failMvVal, tempDir, tempDir, tempDir, tempDir)
 
-	fullScript := harness + "\n" + fnGetVersion + "\n" + fnGetDate + "\n" + fnListsAsset + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnSanitize + "\n" + fnInstallSystemd + "\n" + fnDoInstall + "\n" + driver
+	fullScript := harness + "\n" + fnGetVersion + "\n" + fnGetDate + "\n" + fnListsAsset + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnSanitize + "\n" + fnInstallSystemd + "\n" + fnLinger + "\n" + fnLingerSummary + "\n" + fnDoInstall + "\n" + driver
 	cmd := exec.Command("/bin/sh", "-c", fullScript)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	if opts.failBackup {
@@ -1508,6 +1512,21 @@ do_install
 		finalBin:       string(finalBinBytes),
 		versionWritten: verr == nil,
 		versionMarker:  string(versionBytes),
+	}
+}
+
+func TestInstallerLingerSummaryEndsInstall(t *testing.T) {
+	data := []byte("provider")
+	res := runLinuxInstaller(t, installerHarnessOpts{tag: "v2026.10.27", releaseJSON: `{"tag_name":"v2026.10.27","assets":[{"name":"urnetwork-provider-v2026.10.27.tar.gz"}]}`, tarballData: data})
+	if res.exitCode != 0 {
+		t.Fatalf("install failed: %s", res.stdout)
+	}
+	lines := strings.Split(strings.TrimSpace(res.stdout), "\n")
+	if last := lines[len(lines)-1]; !strings.Contains(last, "WARNING: lingering is OFF") {
+		t.Fatalf("last line = %q", last)
+	}
+	if strings.Contains(res.stdout, "unexpected sudo") {
+		t.Fatal("sudo was called")
 	}
 }
 

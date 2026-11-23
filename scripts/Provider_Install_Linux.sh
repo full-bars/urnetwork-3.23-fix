@@ -215,6 +215,7 @@ offer_extender_capability ()
 show_help ()
 {
     echo "Usage: $me [options] <command>"
+    echo "URNET_INSTALL_LINGER=sudo allows non-interactive sudo -n loginctl during install."
     echo ""
     echo "Core Commands:"
     echo "  start                   Start the provider"
@@ -1707,6 +1708,7 @@ Persistent=true
 WantedBy=default.target
 EOF
 
+    installer_linger_user=""
     if ! enable_out=$(systemctl --user enable urnetwork.service 2>&1); then
         if [ "$(id -u)" -eq 0 ]; then
             pr_warn "Running as root: user systemd service skipped (requires user session bus). Use Docker 'restart: unless-stopped' or manually run the provider binary."
@@ -1716,6 +1718,8 @@ EOF
             pr_info "The new binary and unit files are installed; service enable failed and this installer has not restarted the service. Once systemd works for your user, finish with: systemctl --user daemon-reload && systemctl --user enable --now urnetwork.service urnetwork-update.timer"
             exit 1
         fi
+    else
+        installer_linger_user="$(id -un)"
     fi
 
     if ! enable_out=$(systemctl --user enable --now urnetwork-update.timer 2>&1); then
@@ -2485,19 +2489,56 @@ func_run_as_user ()
     fi
 }
 
-# Enable lingering without suppressing errors or prompting for credentials.
+# Enable lingering without prompting unless explicitly offered during installation.
 installer_enable_linger ()
 {
     linger_user="$1"
-    if command -v loginctl >/dev/null 2>&1; then
-        if loginctl enable-linger "$linger_user"; then
+    linger_mode="${2:-quiet}"
+    if ! command -v loginctl >/dev/null 2>&1; then
+        pr_warn "loginctl not found; install it, then run: sudo loginctl enable-linger %s" "$linger_user"
+        return 1
+    fi
+    if [ "$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null)" = yes ]; then
+        pr_info "Systemd lingering already enabled for %s." "$linger_user"
+        return 0
+    fi
+    if loginctl enable-linger "$linger_user" && [ "$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null)" = yes ]; then
+        pr_info "Systemd lingering enabled for %s." "$linger_user"
+        return 0
+    fi
+    if [ "$linger_mode" = install ] && command -v sudo >/dev/null 2>&1; then
+        if [ "${FORCE:-0}" != 1 ] && [ -t 0 ] && [ -t 1 ] && ( : < "${linger_tty:-/dev/tty}" ) 2>/dev/null; then
+            printf 'I can enable it with one command: sudo loginctl enable-linger %s. This asks for your sudo password. Run it now? [y/N] ' "$linger_user"
+            linger_answer=""
+            read -r linger_answer < "${linger_tty:-/dev/tty}" || linger_answer=""
+            case "$linger_answer" in
+                [Yy]|[Yy][Ee][Ss]) sudo loginctl enable-linger "$linger_user" || : ;;
+            esac
+        elif [ "${URNET_INSTALL_LINGER:-}" = sudo ]; then
+            sudo -n loginctl enable-linger "$linger_user" || :
+        fi
+        if [ "$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null)" = yes ]; then
+            pr_info "Systemd lingering enabled for %s." "$linger_user"
             return 0
         fi
-        pr_warn "loginctl enable-linger failed; the service may stop on logout. Run: sudo loginctl enable-linger %s" "$linger_user"
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        pr_warn "Lingering is OFF for %s. The provider will STOP when your last login session closes. Fix: sudo loginctl enable-linger %s" "$linger_user" "$linger_user"
     else
-        pr_warn "loginctl not found; the service may stop on logout. Install it, then run: sudo loginctl enable-linger %s" "$linger_user"
+        pr_warn "Lingering is OFF for %s. The provider will STOP when your last login session closes. Run as root: loginctl enable-linger %s" "$linger_user" "$linger_user"
     fi
     return 1
+}
+
+installer_linger_summary ()
+{
+    linger_user="$1"
+    if command -v loginctl >/dev/null 2>&1 && [ "$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null)" = yes ]; then
+        pr_info "Systemd lingering is on for %s." "$linger_user"
+    else
+        pr_warn "WARNING: lingering is OFF for %s. The provider will STOP when your last login session closes. Fix: sudo loginctl enable-linger %s" "$linger_user" "$linger_user"
+    fi
+    return 0
 }
 
 # Distro-agnostic creation of a dedicated unprivileged user, then finish the
@@ -2556,6 +2597,8 @@ func_assisted_user_setup ()
 
         if func_run_as_user "$newuser" "systemctl --user is-enabled urnetwork.service >/dev/null 2>&1"; then
             pr_info "Done. The provider is installed as a user service under '%s'." "$newuser"
+            installer_linger_user="$newuser"
+            installer_linger_summary "$installer_linger_user"
             exit 0
         fi
         pr_warn "Could not confirm the user service from this session."
@@ -3224,6 +3267,9 @@ do_install ()
 
     if [ "$has_systemd" -eq 1 ]; then
         install_systemd_units
+        if [ -n "$installer_linger_user" ]; then
+            installer_enable_linger "$installer_linger_user" install || :
+        fi
     fi
 
     if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
@@ -3269,8 +3315,7 @@ do_install ()
                 
                 
                 printf "\n"
-                printf "\e[1;33mNote:\e[0m Run \e[1murnet-tools optimize\e[0m to enable systemd lingering and apply OS-level optimizations.\n"
-                printf "This ensures the provider keeps running in the background after you log out.\n"
+                printf "\e[1;33mNote:\e[0m Run \e[1murnet-tools optimize\e[0m to apply OS-level optimizations.\n"
                 printf "\n"
                 printf "\e[1mRefer to <https://docs.ur.io/provider#linux-and-macos> for more detailed instructions.\e[0m\n"
             fi
@@ -3306,6 +3351,9 @@ do_install ()
             pr_info "Updated successfully"
             ;;
     esac
+    if [ -n "${installer_linger_user:-}" ]; then
+        installer_linger_summary "$installer_linger_user"
+    fi
 }
 
 do_uninstall ()
@@ -3501,6 +3549,17 @@ toggle_auto_start ()
 	fi
 
 	if test "$1" = on; then
+        auto_start_user="$(id -un)"
+        if command -v loginctl >/dev/null 2>&1; then
+            if auto_start_linger="$(loginctl show-user "$auto_start_user" -p Linger --value 2>/dev/null)"; then
+                if [ "$auto_start_linger" != yes ]; then
+                    pr_err "linger is not enabled for %s; run sudo loginctl enable-linger %s before enabling this unit" "$auto_start_user" "$auto_start_user"
+                    return 1
+                fi
+            else
+                pr_warn "setAutoStart: warning: cannot check linger for %s" "$auto_start_user"
+            fi
+        fi
 		if systemctl --user is-enabled --quiet urnetwork.service; then
 			pr_info "urnetwork.service is already enabled on login"
 			exit 0

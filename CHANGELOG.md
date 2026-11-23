@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Systemd lingering.** The installer tries to enable lingering for the service user and reports its final state. Status, update and restart warn when it is off. Auto-start refuses to enable the user unit when it is off.
+
 ### Added
 
 - **Peak rates in the Now panel of `urnet-tools top`.** The panel keeps the highest live rate, one minute average and five minute average for billable and for total traffic since `top` started. A one or five minute peak counts only once its window is full, so the first minute cannot set a false one, and the cells show a dash until then. The block uses the chosen unit, steps aside when the panel has no rows to spare, and is held in memory only.
