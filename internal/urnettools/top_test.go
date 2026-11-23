@@ -637,15 +637,24 @@ func TestWrapText(t *testing.T) {
 // closeCounter wraps a Screen to count Close calls and optionally panic in Draw.
 // drawMu is held while drawing so a test can read the simulated terminal
 // without racing tcell's own writes to it (GetContents hands out live storage).
+// failResume makes Resume fail, for a terminal that does not come back.
 type closeCounter struct {
 	tcellui.Screen
 	drawMu      sync.Mutex
 	closes      atomic.Int32
 	draws       atomic.Int32
 	panicOnDraw int32
+	failResume  atomic.Bool
 }
 
 func (c *closeCounter) Close() { c.closes.Add(1); c.Screen.Close() }
+
+func (c *closeCounter) Resume() error {
+	if c.failResume.Load() {
+		return errors.New("resume failed")
+	}
+	return c.Screen.Resume()
+}
 
 func (c *closeCounter) Draw(b *tui.Buffer) {
 	c.drawMu.Lock()

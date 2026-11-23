@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
+	"runtime"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -254,6 +257,37 @@ var statusSigpipeStateFn = func(p Provider) (sigpipeState, error) {
 	return showSigpipeState(p, runSigpipeSystemctl)
 }
 
+var statusLingerCheckFn = func(user string) (bool, error) {
+	out, err := execWithTimeout(5*time.Second, "loginctl", "show-user", user, "-p", "Linger", "--value")
+	return strings.TrimSpace(string(out)) == "yes", err
+}
+
+func lifecycleLingerWarning(p Provider) string {
+	if runtime.GOOS != "linux" || p.Unit == "" || p.Supervisor == "openrc" || p.User == "" || !isUserUnit(p.Unit) {
+		return ""
+	}
+	if enabled, err := statusLingerCheckFn(p.User); err == nil && !enabled {
+		return lingerOffWarning(p.User)
+	}
+	return ""
+}
+
+// lingerOffWarning is the one sentence every surface prints for a user whose
+// lingering is off, so the installer, status and the lifecycle commands agree.
+func lingerOffWarning(user string) string {
+	return fmt.Sprintf("WARNING: lingering is OFF for %s. The provider will STOP when your last login session closes. Fix: sudo loginctl enable-linger %s", user, user)
+}
+
+func warnLifecycleLinger(p Provider) {
+	if warning := lifecycleLingerWarning(p); warning != "" {
+		fmt.Fprintln(os.Stderr, warning)
+	}
+}
+
+func statusLingerApplicable(p Provider) bool {
+	return runtime.GOOS == "linux" && p.Unit != "" && p.Supervisor != "openrc" && p.User != "" && isUserUnit(p.Unit)
+}
+
 // collectStatusData reads every source without letting one slow source stop
 // another. The snapshot stays nil when the provider does not answer, which
 // drives both the "live status unavailable" rows and the unreachable exit
@@ -271,6 +305,11 @@ func collectStatusData(p Provider) statusData {
 		}
 	}
 	rows := makeStatusRows(p, snap, ext, sigpipeRisk)
+	if statusLingerApplicable(p) {
+		if enabled, err := statusLingerCheckFn(p.User); err == nil && !enabled {
+			rows = append(rows, statusRow{"Linger", statusWarn, "off; run sudo loginctl enable-linger " + p.User})
+		}
+	}
 	updateState := checkStatusUpdateFn(p.StateDir)
 	d := statusData{Provider: p, Snapshot: snap, Rows: rows, Update: updateState}
 	d.ExitCode = statusExitCode(d)

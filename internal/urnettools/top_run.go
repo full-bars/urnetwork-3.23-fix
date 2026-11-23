@@ -3,7 +3,10 @@ package urnettools
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime/debug"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/urnetwork/connect/internal/tui"
@@ -15,12 +18,30 @@ import (
 // that is a multiple of it is met exactly.
 const topTick = topMinInterval
 
+// topSignalIgnore is set while a child command owns the terminal, so a Ctrl-C
+// at its prompt reaches the child instead of ending top.
+var topSignalIgnore atomic.Bool
+
+// topSignalEndsTop reports whether a signal should cancel the loop. SIGTERM
+// always does. SIGINT does unless a child owns the terminal, where it is the
+// child's to handle.
+func topSignalEndsTop(sig os.Signal) bool {
+	if sig == syscall.SIGTERM {
+		return true
+	}
+	return !topSignalIgnore.Load()
+}
+
 // topMinFrame is the shortest time between two redraws, 20 frames a second.
 const topMinFrame = 50 * time.Millisecond
 
 // topResult is one finished fetch, tagged with the selection it was for. A
 // traffic result carries the light live counters instead of a snapshot.
 type topResult struct {
+	isLinger  bool
+	linger    []topLingerReading
+	lingerRev int
+
 	gen       int
 	snap      *NodeSnapshot
 	err       error
@@ -224,6 +245,31 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		}()
 	}
 
+	var lingerAt time.Time
+	var lingerBusy bool
+	fetchLinger := func() {
+		lingerBusy = true
+		lingerAt = m.now()
+		providers := append([]Provider(nil), m.providers...)
+		// The merge runs on the fetch goroutine, which must not read the
+		// model's own slice while the loop may write it.
+		previous := append([]topLingerReading(nil), m.linger...)
+		rev := m.lingerRev
+		go func() {
+			res := topResult{isLinger: true, lingerRev: rev}
+			defer func() {
+				if recover() != nil {
+					res.linger = nil
+				}
+				select {
+				case results <- res:
+				case <-ctx.Done():
+				}
+			}()
+			res.linger = collectTopLinger(providers, previous, time.Now(), statusLingerApplicable, statusLingerCheckFn)
+		}()
+	}
+
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	buf := tui.New(0, 0)
@@ -234,9 +280,14 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 	}()
 	scr.SetMouse(m.mouse)
 	lastMouse := m.mouse
+	// A screen is here, so the banner may offer the fix.
+	m.lingerFixable = true
 	var lastDraw time.Time
 	dirty := true
 	for {
+		if _, ok := src.(socketTopSource); ok && !lingerBusy && (lingerAt.IsZero() || m.now().Sub(lingerAt) >= 30*time.Second) {
+			fetchLinger()
+		}
 		if m.mouse != lastMouse {
 			scr.SetMouse(m.mouse)
 			lastMouse = m.mouse
@@ -322,6 +373,15 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				return nil
 			case topCopy:
 				m.copyFrame(buf)
+			case topLingerEnable:
+				// The fix runs here, on the loop's own goroutine: it may hand
+				// the terminal to a sudo prompt, so nothing else may draw. A
+				// terminal that did not come back cannot take a frame or a key,
+				// so top ends and the caller reports the error.
+				if err := m.enableLingering(scr); err != nil {
+					return err
+				}
+				lingerBusy, lingerAt = false, m.now()
 			}
 			if !move || m.hoverSignature() != before {
 				dirty = true
@@ -329,6 +389,10 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		case r := <-results:
 			dirty = true
 			switch {
+			case r.isLinger:
+				lingerBusy = false
+				// A check that started before a fix carries the old answer.
+				m.applyLinger(r.linger, r.lingerRev)
 			case r.isProxyDetail:
 				detailBusy = false
 				m.applyProxyCellDetail(r.gen, r.proxyDetail, r.err)

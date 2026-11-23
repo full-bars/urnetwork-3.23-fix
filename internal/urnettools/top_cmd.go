@@ -79,9 +79,22 @@ func cmdTop(args []string) error {
 	// SIGINT and SIGTERM end the loop through the context, so the terminal is
 	// restored by runTop's own exit path rather than by the signal killing the
 	// process mid-frame. In raw mode Ctrl-C arrives as a key, not a signal, and
-	// is handled by the model.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// is handled by the model. While a child command owns the terminal (a sudo
+	// password prompt) Ctrl-C is meant for the child, so top ignores SIGINT for
+	// that stretch and keeps running after the child ends.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigs)
+	go func() {
+		for sig := range sigs {
+			if topSignalEndsTop(sig) {
+				cancel()
+				return
+			}
+		}
+	}()
 	th := tui.ThemeFromEnv(os.Getenv)
 	m := newTopModel(providers, cur, interval, th, time.Now)
 	// A terminal that cannot report the mouse starts in Keyboard Mode, where
