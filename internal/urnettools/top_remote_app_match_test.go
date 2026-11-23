@@ -88,3 +88,33 @@ func TestRemoteScaleFloors(t *testing.T) {
 		t.Fatalf("a 4 KiB/s peak must reach the top of its half, reached row %d:\n%s", top, b.String())
 	}
 }
+
+// Only the byte curve has a fill under it, as in the client app. The packet
+// curve is a line, so where the two overlap the byte area stays readable.
+func TestRemotePacketCurveHasNoFill(t *testing.T) {
+	c := remoteTestChart(remoteSpike(60, 20, 64*1024, 0), nil)
+	c.Up = append(c.Up, remoteSeries{Style: remotePink, Group: "billable packets", Packets: true, Values: remoteSpike(60, 40, 200, 0)})
+	b := tui.New(60, 15)
+	drawRemoteChart(b, c)
+	var greenFill, pinkFill, pinkLine int
+	for y := 0; y < b.Height(); y++ {
+		for x := 0; x < b.Width(); x++ {
+			st := b.Cell(x, y).Style
+			dim := st.Attrs&tui.AttrDim != 0
+			switch {
+			case st.FG == remoteGreen.FG && dim:
+				greenFill++
+			case st.FG == remotePink.FG && dim:
+				pinkFill++
+			case st.FG == remotePink.FG:
+				pinkLine++
+			}
+		}
+	}
+	if greenFill == 0 || pinkLine == 0 {
+		t.Fatalf("expected a byte fill and a packet line, got %d and %d:\n%s", greenFill, pinkLine, b.String())
+	}
+	if pinkFill != 0 {
+		t.Fatalf("the packet curve has %d fill cells:\n%s", pinkFill, b.String())
+	}
+}

@@ -473,7 +473,7 @@ func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSe
 		if len(pts) == 0 {
 			continue
 		}
-		cv.plot(pts, scales[s.Group], up, i)
+		cv.plot(pts, scales[s.Group], up, i, !s.Packets)
 	}
 	cv.draw(b, y0)
 }
@@ -579,9 +579,10 @@ func (cv *remoteCanvas) setFill(x, y, idx int) {
 }
 
 // plot draws one curve: the value at every dot column, the gap between
-// neighbouring columns filled so the line has no breaks, and a stippled fill
-// between the curve and the center line.
-func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int) {
+// neighbouring columns filled so the line has no breaks, and, with fill set,
+// a stippled fill between the curve and the center line. The client app fills
+// under the byte curve only and draws the packet curve as a line.
+func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int, fill bool) {
 	if scale <= 0 {
 		scale = 1
 	}
@@ -615,7 +616,7 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int)
 		} else {
 			lo, hi = base, y-1
 		}
-		for yy := lo; yy <= hi; yy++ {
+		for yy := lo; fill && yy <= hi; yy++ {
 			// A diagonal stipple, one dot in three: a wash under the curve that
 			// reads as a filled area without competing with the line.
 			if (x+yy)%3 == 0 {
