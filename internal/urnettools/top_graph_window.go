@@ -109,8 +109,9 @@ func (r *topGraphRing) cover(window time.Duration) (covered time.Duration, full 
 
 // spreadSeries places readings on a time axis of n columns covering window,
 // ending at the newest reading. A reading fills every column its span crosses,
-// so a handful of readings become wide step bars and many readings keep the
-// highest one in each column. Columns the data does not reach stay NaN, which
+// so a handful of readings become wide step bars, and a column that several
+// readings cross draws their mean, so a noisy series at 5m or 15m reads as a
+// smooth band. The peak table in the Now panel keeps the real peaks. Columns the data does not reach stay NaN, which
 // draws as blank: a young window grows in from the right instead of stretching
 // a few seconds across a quarter hour.
 func spreadSeries(at []int64, spans []time.Duration, values []float64, newest int64, window time.Duration, n int) []float64 {
@@ -126,6 +127,8 @@ func spreadSeries(at []int64, spans []time.Duration, values []float64, newest in
 	start := newest - int64(window)
 	cols := float64(n)
 	width := float64(window)
+	sums := make([]float64, n)
+	counts := make([]int, n)
 	for i := readings - 1; i >= 0; i-- {
 		v := values[i]
 		if math.IsNaN(v) {
@@ -136,14 +139,23 @@ func spreadSeries(at []int64, spans []time.Duration, values []float64, newest in
 		if b < start || a > newest {
 			break // everything older is outside the window too
 		}
+		// A reading covers the columns from its start up to, not into, the
+		// column its end falls in, so two readings that touch do not share
+		// a column and average each other. Every reading keeps at least one
+		// column.
 		c0 := int(float64(a-start) / width * cols)
-		c1 := int(float64(b-start) / width * cols)
+		c1 := int(float64(b-start)/width*cols) - 1
+		c1 = max(c1, c0)
 		c0 = max(c0, 0)
 		c1 = min(c1, n-1)
 		for c := c0; c <= c1; c++ {
-			if math.IsNaN(out[c]) || v > out[c] {
-				out[c] = v
-			}
+			sums[c] += v
+			counts[c]++
+		}
+	}
+	for c := range out {
+		if counts[c] > 0 {
+			out[c] = sums[c] / float64(counts[c])
 		}
 	}
 	return out

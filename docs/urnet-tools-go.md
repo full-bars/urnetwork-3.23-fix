@@ -193,7 +193,7 @@ The throughput graphs draw one fixed, round time span and fill the plot with it 
 
 `1m` is the default. Press `w` to step to the next scale and `W` to step back, and both wrap around the table. The footer names the scale (`w zoom 1m`). Clicking the footer hint or the graph title steps to the next scale. The choice is saved in `top.conf` as `graph.window`, and a missing or unknown value falls back to the default, so an older file keeps working.
 
-The graphs keep the readings of the longest scale, one reading per traffic poll, which is 9000 readings at the 100 ms refresh and more than enough at the slower ones. When a scale holds more readings than the plot has columns, each column shows the highest reading in it, so a spike stays visible. When it holds fewer, each reading covers its own share of the columns, so the plot is a set of step bars and no reading is smoothed away.
+The graphs keep the readings of the longest scale, one reading per traffic poll, which is 9000 readings at the 100 ms refresh and more than enough at the slower ones. When a scale holds more readings than the plot has columns, each column shows the mean of the readings in it, so a noisy series at 5m or 15m reads as a smooth band. The peak table in the Now panel keeps the real peaks. When it holds fewer, each reading covers its own share of the columns, so the plot is a set of step bars and no reading is smoothed away.
 
 More columns than readings is the common case at the slower refresh speeds and the shorter scales. A scale whose readings do not reach the left edge yet says so in the title, for example `Billable, 15m (collecting 40s)`, and the data grows in from the right. The title switches to `Billable, 15m` when the readings cover the whole span.
 

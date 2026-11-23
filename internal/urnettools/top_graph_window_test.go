@@ -39,7 +39,7 @@ func TestTopGraphWindowsAreFourRoundSpans(t *testing.T) {
 
 // spreadSeries is what makes a level fill the plot: a reading covers the
 // columns its time span crosses, so few readings become wide step bars and
-// many readings keep the highest one in each column.
+// many readings are averaged in each column.
 func TestSpreadSeriesFillsEveryColumnWithStepBars(t *testing.T) {
 	const base int64 = 1_000_000_000_000
 	var at []int64
@@ -69,7 +69,10 @@ func TestSpreadSeriesFillsEveryColumnWithStepBars(t *testing.T) {
 	}
 }
 
-func TestSpreadSeriesKeepsThePeakInAColumn(t *testing.T) {
+// A column with several readings draws their mean, never the highest one, so a
+// noisy series at 5m or 15m reads as a smooth band. The peak table in the Now
+// panel still carries the real peaks.
+func TestSpreadSeriesAveragesAColumn(t *testing.T) {
 	const base int64 = 1_000_000_000_000
 	var at []int64
 	var spans []time.Duration
@@ -87,8 +90,10 @@ func TestSpreadSeriesKeepsThePeakInAColumn(t *testing.T) {
 			peak = v
 		}
 	}
-	if peak != 9_000_000 {
-		t.Fatalf("peak over the plot = %v, want the spike downsampled intact", peak)
+	// Each column covers about seven readings, so the spike is averaged
+	// with its neighbors.
+	if peak >= 9_000_000/2 || peak <= 9_000_000/10 {
+		t.Fatalf("peak over the plot = %v, want the spike averaged into its column", peak)
 	}
 }
 
