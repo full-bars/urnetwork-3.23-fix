@@ -16,7 +16,7 @@ import (
 // (0 to 6 columns). A chart that scrolls without reshaping scores a few
 // percent. One that re-samples its curve at a new phase every frame scores
 // far higher.
-func remoteFrameDrift(t *testing.T, replies []LiveTraffic, level, from int) float64 {
+func remoteFrameDrift(t *testing.T, replies []LiveTraffic, level, from int, packets bool) float64 {
 	t.Helper()
 	clock := &fakeClock{t: time.Unix(0, replies[0].AtUnixNano)}
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
@@ -24,6 +24,11 @@ func remoteFrameDrift(t *testing.T, replies []LiveTraffic, level, from int) floa
 	snap := packetsFixture(t)
 	snap.Rate.HistoryBps = nil
 	snap.Traffic.TotalHistoryBps = nil
+	if !packets {
+		// A provider without the direction and packet counters draws the
+		// billable over total form, from a different ring.
+		snap.Traffic.Directions, snap.Traffic.Packets = nil, nil
+	}
 	m.apply(0, snap, nil)
 	m.winLevel = level
 	m.page = pageByID("remote")
@@ -31,7 +36,13 @@ func remoteFrameDrift(t *testing.T, replies []LiveTraffic, level, from int) floa
 	var mismatch, dots float64
 	for i := range replies {
 		lt := replies[i]
-		clock.t = time.Unix(0, lt.AtUnixNano)
+		if !packets {
+			lt.BillableTxBytes, lt.BillableRxBytes, lt.BillableTxPackets, lt.BillableRxPackets = nil, nil, nil, nil
+		}
+		// A reading reaches the client some tens of milliseconds off its
+		// nominal time, as it does on a busy host.
+		arrive := time.Unix(0, lt.AtUnixNano).Add(time.Duration((i*7919)%241-120) * time.Millisecond)
+		clock.t = arrive
 		m.applyTraffic(m.gen, &lt, nil)
 		if i < from {
 			continue
@@ -40,7 +51,7 @@ func remoteFrameDrift(t *testing.T, replies []LiveTraffic, level, from int) floa
 		// one, as the header clock does once a second. Both frames show the
 		// same readings.
 		for _, late := range []time.Duration{0, 800 * time.Millisecond} {
-			clock.t = time.Unix(0, lt.AtUnixNano).Add(late)
+			clock.t = arrive.Add(late)
 			b := tui.New(120, 40)
 			renderFresh(m, b)
 			box := regionRect(t, m, "box:remote")
@@ -81,18 +92,21 @@ func remoteFrameDrift(t *testing.T, replies []LiveTraffic, level, from int) floa
 	return 100 * mismatch / dots
 }
 
-// The Remote chart scrolls without reshaping at every zoom level.
+// The Remote chart scrolls without reshaping at every zoom level, with and
+// without the packet counters.
 func TestRemoteChartScrollsWithoutReshaping(t *testing.T) {
 	replies := recordedReplies(t, "top_remote_recorded_660s.jsonl")
-	for _, c := range []struct {
-		name  string
-		level int
-		bound float64
-	}{{"1m", 1, 8}, {"5m", 2, 8}, {"15m", 3, 8}} {
-		got := remoteFrameDrift(t, replies, c.level, 400)
-		t.Logf("%s: %.1f%% of the plotted dots change shape between frames", c.name, got)
-		if got > c.bound {
-			t.Errorf("%s: %.1f%% of the plotted dots change shape between frames, want at most %.0f%%", c.name, got, c.bound)
+	for _, packets := range []bool{true, false} {
+		for _, c := range []struct {
+			name  string
+			level int
+			bound float64
+		}{{"1m", 1, 8}, {"5m", 2, 8}, {"15m", 3, 8}} {
+			got := remoteFrameDrift(t, replies, c.level, 400, packets)
+			t.Logf("%s packets=%v: %.1f%% of the plotted dots change shape between frames", c.name, packets, got)
+			if got > c.bound {
+				t.Errorf("%s packets=%v: %.1f%% of the plotted dots change shape between frames, want at most %.0f%%", c.name, packets, got, c.bound)
+			}
 		}
 	}
 }

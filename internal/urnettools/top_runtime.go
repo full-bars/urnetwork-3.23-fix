@@ -104,8 +104,14 @@ type topTrafficHistory struct {
 	// clock at draw time would move the whole history by a second whenever a
 	// draw landed just before a reading.
 	arrived time.Time
-	spans   []time.Duration
-	seq     int64
+	// at is the date of each column, one per entry of billable. A column is
+	// dated when it is stored and never again: one unit after the one before
+	// it, or a whole number of units later when readings were missed. Arrival
+	// jitter then cannot move a stored sample by a fraction of a dot column,
+	// which would draw the whole curve at a new phase on every frame.
+	at    []int64
+	spans []time.Duration
+	seq   int64
 
 	upBytes, downBytes, upPackets, downPackets []float64
 	// dirPrev is the last reading of the direction counters, which the next
@@ -190,6 +196,35 @@ func (h *topTrafficHistory) trimDirs(n int) {
 	}
 }
 
+// latticeStep dates the next column from the one before it and the time its
+// reading arrived.
+func latticeStep(prev, arrival int64, unit time.Duration) int64 {
+	u := int64(unit)
+	if prev == 0 || u <= 0 {
+		return arrival
+	}
+	k := int64(0)
+	if arrival > prev {
+		k = (arrival - prev + u/2) / u
+	}
+	k = max(k, 1)
+	t := prev + k*u
+	if t > arrival+u/2 {
+		// The dates ran ahead of the clock: start again from the arrival.
+		return arrival
+	}
+	return t
+}
+
+// nextAt is the date of the column about to be stored.
+func (h *topTrafficHistory) nextAt(unit time.Duration) int64 {
+	prev := int64(0)
+	if n := len(h.at); n > 0 && n == len(h.billable) {
+		prev = h.at[n-1]
+	}
+	return latticeStep(prev, h.arrived.UnixNano(), unit)
+}
+
 func (h *topTrafficHistory) push(at int64, b, t float64) {
 	h.pushSlot(at, b, t)
 }
@@ -201,6 +236,7 @@ func (h *topTrafficHistory) pushSlot(at int64, b, t float64) {
 	}
 	if len(h.billable) == 0 {
 		h.second = second
+		h.at = []int64{h.arrived.UnixNano()}
 		h.billable, h.total = []float64{b}, []float64{t}
 		h.spans = []time.Duration{time.Second}
 		h.upBytes, h.downBytes, h.upPackets, h.downPackets = nil, nil, nil, nil
@@ -209,12 +245,14 @@ func (h *topTrafficHistory) pushSlot(at int64, b, t float64) {
 		return
 	}
 	gap := second - h.second
+	newest := h.nextAt(time.Second)
 	if gap >= topGraphCapacity {
-		h.billable, h.total, h.spans = nil, nil, nil
+		h.billable, h.total, h.spans, h.at = nil, nil, nil, nil
 		h.upBytes, h.downBytes, h.upPackets, h.downPackets = nil, nil, nil, nil
 		gap = topGraphCapacity
 	}
 	for i := int64(0); i < gap; i++ {
+		h.at = append(h.at, newest-(gap-1-i)*int64(time.Second))
 		h.billable = append(h.billable, math.NaN())
 		h.total = append(h.total, math.NaN())
 		h.spans = append(h.spans, time.Second)
@@ -225,6 +263,7 @@ func (h *topTrafficHistory) pushSlot(at int64, b, t float64) {
 		h.billable = h.billable[len(h.billable)-topGraphCapacity:]
 		h.total = h.total[len(h.total)-topGraphCapacity:]
 		h.spans = h.spans[len(h.spans)-topGraphCapacity:]
+		h.at = h.at[len(h.at)-topGraphCapacity:]
 		h.trimDirs(topGraphCapacity)
 	}
 	h.second = second
@@ -234,6 +273,7 @@ func (h *topTrafficHistory) pushSlot(at int64, b, t float64) {
 // pushColumn retains a reading with its actual elapsed span.
 func (h *topTrafficHistory) pushColumn(at int64, span time.Duration, b, t float64) {
 	const keep = 8192
+	h.at = append(h.at[:min(len(h.at), len(h.billable))], h.nextAt(time.Second))
 	h.billable = append(h.billable, b)
 	h.total = append(h.total, t)
 	h.spans = append(h.spans, span)
@@ -244,6 +284,7 @@ func (h *topTrafficHistory) pushColumn(at int64, span time.Duration, b, t float6
 		h.billable = h.billable[len(h.billable)-keep:]
 		h.total = h.total[len(h.total)-keep:]
 		h.spans = h.spans[len(h.spans)-keep:]
+		h.at = h.at[len(h.at)-keep:]
 		h.trimDirs(keep)
 	}
 }

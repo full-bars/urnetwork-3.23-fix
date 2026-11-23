@@ -484,6 +484,8 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 				if len(m.trafficHistory.billable) == 0 && m.snap != nil {
 					history := m.snap.Rate.HistoryBps
 					for i, value := range history {
+						// The seeded seconds are dated back from this reading.
+						m.trafficHistory.arrived = m.now().Add(-time.Duration(len(history)-1-i) * time.Second)
 						total := math.NaN()
 						if m.snap.Traffic != nil && i < len(m.snap.Traffic.TotalHistoryBps) {
 							total = m.snap.Traffic.TotalHistoryBps[i]
@@ -497,13 +499,13 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 						m.winRing.push(at-int64(time.Second), time.Second, value, total)
 					}
 				}
+				m.trafficHistory.arrived = m.now()
 				if m.interval <= time.Second {
 					m.trafficHistory.pushColumn(lt.AtUnixNano, time.Duration(lt.AtUnixNano-last), b, t)
 				} else {
 					m.trafficHistory.pushSlot(lt.AtUnixNano, b, t)
 				}
 				m.trafficHistory.setDirs(dirs)
-				m.trafficHistory.arrived = m.now()
 				m.winRing.push(lt.AtUnixNano, time.Duration(lt.AtUnixNano-last), b, t)
 			}
 		}

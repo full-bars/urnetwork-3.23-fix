@@ -86,6 +86,16 @@ func (m *topModel) remoteData() (up, down []float64, newest time.Time, interval 
 	return up, down, m.snapNewest(interval), interval, true
 }
 
+// ringTimes is the stored date of each column of the client ring, when a
+// series of n columns is drawn from it. The provider's own ring carries none.
+func (m *topModel) ringTimes(n int) []int64 {
+	h := &m.trafficHistory
+	if len(h.billable) > 0 && len(h.at) == n && len(h.billable) == n {
+		return h.at
+	}
+	return nil
+}
+
 // trafficNewest is the time of the newest reading in the client ring: when it
 // arrived. Before any reading it is the clock at draw time, to the second.
 func (m *topModel) trafficNewest(interval time.Duration) time.Time {
@@ -173,6 +183,7 @@ func (m *topModel) drawRemote(b *tui.Buffer) {
 			Newest:   newest,
 			Interval: interval,
 			Window:   m.remoteWindow(),
+			Times:    m.ringTimes(len(upB)),
 			Scales:   m.remoteScales,
 			// One byte scale and one packet scale for both halves, as in
 			// the client app, so a small upload looks small next to a big
@@ -201,6 +212,7 @@ func (m *topModel) drawRemote(b *tui.Buffer) {
 		Newest:   newest,
 		Interval: interval,
 		Window:   m.remoteWindow(),
+		Times:    m.ringTimes(len(up)),
 		Scales:   m.remoteScales,
 		ASCII:    th.ASCII,
 		Dim:      th.Dim,

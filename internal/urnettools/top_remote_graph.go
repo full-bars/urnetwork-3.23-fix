@@ -77,6 +77,9 @@ type remoteChart struct {
 	Up, Down []remoteSeries
 	Now      time.Time
 	Newest   time.Time
+	// Times dates each sample of the series, when the source stored a date per
+	// sample. It then replaces the even spacing Newest and Interval imply.
+	Times    []int64
 	Interval time.Duration
 	Window   time.Duration
 	Scales   map[string]*remoteScale
@@ -901,8 +904,12 @@ func remotePointsIn(c remoteChart, vals []float64, dots, buckets int) []remotePo
 	now := c.clock()
 	windowStart := now.Add(-c.Window)
 	var samples []remoteSample
+	stored := len(c.Times) == len(vals)
 	for i := len(vals) - 1; i >= 0; i-- {
 		at := c.Newest.Add(-time.Duration(len(vals)-1-i) * c.Interval)
+		if stored {
+			at = time.Unix(0, c.Times[i])
+		}
 		if at.Before(windowStart) {
 			break
 		}
