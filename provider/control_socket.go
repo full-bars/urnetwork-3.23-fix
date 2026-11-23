@@ -331,6 +331,8 @@ var liveEffectKeys = map[string]bool{
 	// resolve* functions read globalControlState on every call — already live.
 	"fast_auth":                   true,
 	"h3":                          true,
+	"p2p_source_binding":          true,
+	"p2p_forged_source_drop":      true,
 	"h3_datagram":                 true,
 	"h3_datagram_send":            true,
 	"tls_hello":                   true,
@@ -419,7 +421,13 @@ func validateControlValue(key, value string) error {
 		if _, err := connect.ParseProxyTargetFamily(value); err != nil {
 			return err
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "proxy_dualstack", "proxy_udp_ipv6", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello", "proxy_ipv6_probe":
+	case "p2p_source_binding":
+		switch valLower {
+		case "off", "count", "drop":
+		default:
+			return fmt.Errorf("%s: must be off, count or drop (got %q)", key, value)
+		}
+	case "p2p_forged_source_drop", "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "proxy_dualstack", "proxy_udp_ipv6", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello", "proxy_ipv6_probe":
 		switch valLower {
 		case "on", "off":
 		default:
@@ -535,7 +543,9 @@ var liveDefaults = map[string]string{
 	"proxy_target_family": proxyTargetFamilyDefault,
 	"proxy_ipv6_probe":    "on",
 	// Clearing h1_plus restores the default: H1+ upgrades allowed.
-	"h1_plus": "on",
+	"p2p_source_binding":     "count",
+	"p2p_forged_source_drop": "on",
+	"h1_plus":                "on",
 	// Clearing h3_datagram_send returns to the default: on, as upstream.
 	"h3_datagram_send": "on",
 	// Clearing h3_datagram returns to the default: offering DATAGRAM is on, as
@@ -1136,6 +1146,10 @@ var controlApplyLog = func(format string, args ...any) { tlog(format, args...) }
 
 func applyLiveSideEffect(key, value string) error {
 	switch key {
+	case "p2p_source_binding":
+		return connect.SetP2PSourceBinding(value)
+	case "p2p_forged_source_drop":
+		connect.SetP2PForgedSourceDrop(strings.EqualFold(value, "on"))
 	case "gomemlimit":
 		limit, err := connect.ParseByteCount(value)
 		if err != nil {
@@ -1551,6 +1565,15 @@ func startDefaultMetrics(state *controlState, hotSwapCandidate bool) {
 }
 
 func applyPersistedRuntimeTuning(state *controlState) {
+	for _, key := range []string{"p2p_source_binding", "p2p_forged_source_drop"} {
+		value, ok := state.get(key)
+		if !ok {
+			value = liveDefaults[key]
+		}
+		if err := applyLiveSideEffect(key, value); err != nil {
+			tlog("[control] failed to apply %s: %s\n", key, err)
+		}
+	}
 	if v, ok := state.get("gomemlimit"); ok && v != "" && !strings.EqualFold(v, "off") {
 		if err := applyLiveSideEffect("gomemlimit", v); err != nil {
 			tlog("[control] failed to apply persisted gomemlimit=%s: %s\n", v, err)

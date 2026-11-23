@@ -249,6 +249,50 @@ Cumulative counters survive a provider restart. Traffic, transport, contract, er
 
 Because a series continues instead of resetting, `rate()` or `increase()` computed across a restart would read the restored total as one step of traffic. The shipped dashboards therefore drop a node's series for the five minutes after `urnet_process_start_time_seconds` changes, so the restart is not shown as a spike; hand-written queries that rate these counters should do the same. Gauges are process-scoped and are not restored. `urnet_process_start_time_seconds` marks when the current process started, and `urnet_uptime_seconds` remains the current process's uptime.
 
+## Peer-to-peer source checks
+
+Two rules guard frames that arrive over a direct peer-to-peer lane, which is a lane opened to one peer by the stream signalling.
+
+- A frame that names the platform id or this client's own id is forged: only the platform may name the platform, and only this client names itself. The frame is dropped before decode when `p2p-forged-source-drop` is on, which is the default.
+- A frame on a lane bound to one peer that names a different source is counted and passed on by the binding rule by default (`p2p-source-binding count`). A multihop stream reaches its transit hops with the origin still in the frame, so such frames can be normal traffic. Other receive checks can still reject a passed frame, for example a plaintext frame where encryption is required. `drop` discards those frames before decode and breaks any multihop stream that rides a P2P leg. `off` counts nothing and the binding rule never drops a frame. The forged-source rule is separate. To remove both source barriers, set `p2p-forged-source-drop off` and set `p2p-source-binding` to `count` or `off`.
+
+Both settings are live through `urnet-tools set` with no restart. There is no environment variable.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `urnet_p2p_forged_source_drops_total` | counter | `kind` | Frames dropped because they named the platform (`kind="platform"`) or this client (`kind="self"`). Cumulative since the process started, not persisted across restarts |
+| `urnet_p2p_source_mismatch_total` | counter | `mode`, `outcome` | Frames on a lane bound to one peer that named a different source, by the mode in force when the frame arrived and what happened to it. Cumulative since the process started, not persisted across restarts |
+
+The outcome values have one meaning each:
+
+| Outcome | Meaning |
+|---|---|
+| `decoded` | The frame was accepted: it parsed, and the receive path did not discard it. This is what a legitimate multihop frame looks like at its destination |
+| `rejected` | The frame could not be used: it failed to parse or decrypt, or this client requires encryption for that source and threw the plaintext frame away |
+| `dropped` | A policy discarded the frame: `p2p-source-binding drop`, or a routing guard that could not place it |
+
+Only `mode="count"` produces `decoded` and `rejected`. `drop` mode resolves every mismatch before decode, so it reports `dropped` alone. There is no `forwarded` outcome: a transit hop forwards the bytes without decoding them, and it is not a policy point.
+
+### Before switching to drop mode
+
+The default `count` mode is the canary. Read it as evidence about the traffic this node carries, never as proof of what another node carries.
+
+| Signal | Reading | Action |
+|---|---|---|
+| `outcome="decoded"` stays at zero for a week on a busy node | Evidence that no multihop stream rides a P2P leg here. It is not proof: a stream that never ran says nothing either | `drop` is reasonable to try on that node |
+| `outcome="decoded"` is above zero | The node accepted frames that named a source other than the lane's peer. Some can be multihop traffic and some can be spoofing, and the count does not tell which | Find which peers send them. Keep `count`, because `drop` would cut any multihop stream |
+| `outcome="rejected"` rises | Frames that cannot be used: a peer sending plaintext where encryption is required, a corrupt frame, or a spoofed source | Nothing to do unless it climbs. Read it as a spoofing signal when the node carries no multihop traffic |
+| `outcome="dropped"` above zero while mode is `count` | A routing guard discarded a frame this node could not place | Look for stream churn on the P2P lanes |
+| `urnet_p2p_forged_source_drops_total` rises | A peer is naming the platform or this client on a direct lane, which no legitimate peer does | Inspect the peers on the P2P lanes. `p2p-forged-source-drop off` turns this drop off while you look, at the cost of accepting the frames. With `p2p-source-binding drop` set, the binding rule still drops them |
+
+### Troubleshooting a counter that is not zero
+
+- Start with the mode. `urnet-tools get p2p-source-binding` shows the mode in force, and every `mode` label is the mode at the moment the frame arrived, so a change of setting splits the series rather than rewriting it.
+- A forged drop names its kind. `kind="platform"` means a frame claimed the platform id. `kind="self"` means a frame claimed this client's own id. Both are worth a look at which P2P peers are connected.
+- `rejected` with `outcome` rising while no multihop stream exists points at a peer that sends frames this node cannot use. Compare with the provider's peer audit lines for the same source.
+- A `dropped` count in `count` mode comes from the routing guard, not from the binding rule: the binding rule only drops in `drop` mode.
+- Zero on both families is the expected state on a node with no P2P traffic. It is evidence of silence, not proof that the guard would have dropped nothing.
+
 ## Metrics reference
 
 | Metric | Type | Labels | Meaning |
@@ -350,6 +394,8 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_tcp_orphans` | gauge | | Orphaned TCP sockets (Linux) |
 | `urnet_goroutines` | gauge | | Goroutines |
 | `urnet_pool_latency_ms` | gauge | | Message pool average latency |
+| `urnet_p2p_forged_source_drops_total` | counter | `kind` | Frames dropped on a direct peer-to-peer lane that named the platform (`platform`) or this client (`self`), not persisted across restarts. See [Peer-to-peer source checks](#peer-to-peer-source-checks) |
+| `urnet_p2p_source_mismatch_total` | counter | `mode`, `outcome` | Frames on a lane bound to one peer that named a different source, by mode and outcome (`decoded`, `rejected`, `dropped`), not persisted across restarts. See [Peer-to-peer source checks](#peer-to-peer-source-checks) |
 | `urnet_enforcement_events_total` | counter | `kind`, `mode` | Governor events recorded in the durable enforcement log since it began, by kind and mode. Survives restarts; each kind counts events as the governors emit them, so `dead_client_release` is rate-limited per destination and `retry_budget` is an aggregate report |
 | `urnet_enforcement_events` | gauge | `kind`, `mode`, `window` | Governor events in the durable log over today, the last 7 and 30 UTC days (`window` is `today`, `7d` or `30d`) |
 | `urnet_enforcement_log_suppressed_total` | counter | | Event lines counted but not written because a kind exceeded the per-minute line limit |
