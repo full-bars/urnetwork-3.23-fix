@@ -267,9 +267,15 @@ func lifecycleLingerWarning(p Provider) string {
 		return ""
 	}
 	if enabled, err := statusLingerCheckFn(p.User); err == nil && !enabled {
-		return fmt.Sprintf("WARNING: lingering is OFF for %s. The provider will STOP when your last login session closes. Fix: sudo loginctl enable-linger %s", p.User, p.User)
+		return lingerOffWarning(p.User)
 	}
 	return ""
+}
+
+// lingerOffWarning is the one sentence every surface prints for a user whose
+// lingering is off, so the installer, status and the lifecycle commands agree.
+func lingerOffWarning(user string) string {
+	return fmt.Sprintf("WARNING: lingering is OFF for %s. The provider will STOP when your last login session closes. Fix: sudo loginctl enable-linger %s", user, user)
 }
 
 func warnLifecycleLinger(p Provider) {
