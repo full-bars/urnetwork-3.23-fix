@@ -56,7 +56,7 @@ func (m *topModel) footerHints() []topFooterHint {
 		hints = append(hints, topFooterHint{"footer:mode", topModeHintKeys})
 	}
 	if m.trafficOK {
-		hints = append(hints, topFooterHint{"footer:zoom", "w zoom " + topGraphWindowNames[m.winLevel]})
+		hints = append(hints, topFooterHint{"footer:zoom", "w zoom " + m.graphWindowLabel()})
 	}
 	if m.rt.ok && m.rt.gOK && m.hasInternals() {
 		hints = append(hints, topFooterHint{"footer:goroutines", "g goroutines"})

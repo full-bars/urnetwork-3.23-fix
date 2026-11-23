@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"fmt"
 	"math"
 	"time"
 )
@@ -83,9 +84,59 @@ func (m *topModel) zoomGraphWindow(dir int) {
 	m.winCustom = next
 }
 
-// stepGraphWindow moves the level by d, wrapping around the table.
+// formatGraphWindow names a graph window: a preset keeps its table label, and
+// a custom span formats as exact minutes and seconds (for example "1m40s").
+func formatGraphWindow(d time.Duration) string {
+	for i, w := range topGraphWindows {
+		if d == w {
+			return topGraphWindowNames[i]
+		}
+	}
+	secs := int(math.Round(d.Seconds()))
+	if secs < 60 {
+		return fmt.Sprintf("%ds", secs)
+	}
+	if secs%60 == 0 {
+		return fmt.Sprintf("%dm", secs/60)
+	}
+	return fmt.Sprintf("%dm%ds", secs/60, secs%60)
+}
+
+// graphWindowLabel is the label for the current graph window.
+func (m *topModel) graphWindowLabel() string {
+	return formatGraphWindow(m.graphWindow())
+}
+
+// stepGraphWindow moves to the next or previous preset, wrapping around the
+// table. From a custom wheel-zoomed window it snaps to the nearest preset in
+// that direction and clears the custom value.
 func (m *topModel) stepGraphWindow(d int) {
 	n := len(topGraphWindows)
+	if m.winCustom > 0 {
+		cur := m.winCustom
+		m.winCustom = 0
+		if d > 0 {
+			for i, w := range topGraphWindows {
+				if w > cur {
+					m.winLevel = i
+					return
+				}
+			}
+			m.winLevel = 0
+			return
+		}
+		if d < 0 {
+			for i := n - 1; i >= 0; i-- {
+				if topGraphWindows[i] < cur {
+					m.winLevel = i
+					return
+				}
+			}
+			m.winLevel = n - 1
+			return
+		}
+		return
+	}
 	m.winLevel = ((m.winLevel+d)%n + n) % n
 }
 

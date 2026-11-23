@@ -370,7 +370,11 @@ func topIntervalText(d time.Duration) string {
 // filled.
 func (m *topModel) throughputTitle(name string, sr topSeries) string {
 	if sr.window {
-		title := name + ", " + topGraphWindowNames[sr.level]
+		span := sr.winSpan
+		if span <= 0 {
+			span = topGraphWindows[sr.level]
+		}
+		title := name + ", " + formatGraphWindow(span)
 		if !sr.full {
 			if sr.covered < time.Second {
 				title += " (collecting)"
