@@ -141,10 +141,12 @@ func (m *topModel) drawTransportsPage(b *tui.Buffer, content tui.Rect) {
 		if m.conn == topDisconnected {
 			msg = "no data: " + m.lastErr
 		}
+		m.drawWatermark(box, 1)
 		box.Put(tui.Truncate(msg, box.Width(), th.ASCII), 0, 0, th.Dim)
 		return
 	}
 	if !ready {
+		m.drawWatermark(box, 1)
 		box.Put(tui.Truncate("collecting the first window", box.Width(), th.ASCII), 0, 0, th.Dim)
 		return
 	}

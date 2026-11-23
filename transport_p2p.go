@@ -183,7 +183,7 @@ func (self *P2pTransport) run() {
 
 				updateRoute := func(connected bool) {
 					if connected {
-						self.receiveRouteManager.UpdateTransport(t, []Route{route})
+						self.receiveRouteManager.UpdateTransportWithProperties(t, []Route{route}, TransferCarrierProperties{boundSourceId: self.peerId})
 					} else {
 						self.receiveRouteManager.RemoveTransport(t)
 					}
@@ -418,6 +418,10 @@ func (self *P2pReceiveTransport) run() {
 			return
 		}
 	}
+}
+
+func (self *P2pReceiveTransport) TransportType() TransportType {
+	return TransportTypeP2p
 }
 
 func (self *P2pReceiveTransport) TransportId() Id {

@@ -95,6 +95,7 @@ func (m *topModel) drawRemote(b *tui.Buffer) {
 		if m.conn == topDisconnected {
 			msg = "no data: " + m.lastErr
 		}
+		m.drawWatermark(b, 1)
 		b.Put(tui.Truncate(msg, b.Width(), th.ASCII), 0, 0, th.Dim)
 		return
 	}

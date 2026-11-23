@@ -124,6 +124,7 @@ func cmdTop(args []string) error {
 	}
 
 	m.copyOnQuit, m.copyPlain = copyOnQuit, plain
+	m.enableLogo(plain, copyOnQuit)
 	m.clip = newTopClipboard(scr)
 	src := topSourceFn()
 	if demo {

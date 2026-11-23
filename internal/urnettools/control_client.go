@@ -144,6 +144,10 @@ var controlKeyCanonical = map[string]string{
 	"h3":                          "h3",
 	"tls-hello":                   "tls_hello",
 	"tls_hello":                   "tls_hello",
+	"p2p-source-binding":          "p2p_source_binding",
+	"p2p_source_binding":          "p2p_source_binding",
+	"p2p-forged-source-drop":      "p2p_forged_source_drop",
+	"p2p_forged_source_drop":      "p2p_forged_source_drop",
 	"h3-datagram":                 "h3_datagram",
 	"h3_datagram":                 "h3_datagram",
 	"h3-datagram-send":            "h3_datagram_send",
@@ -256,7 +260,13 @@ func validateControlValue(canonicalKey, value string) error {
 		default:
 			return fmt.Errorf("proxy-target-family: must be v4 or proxy (got %q)", value)
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "proxy_dualstack", "proxy_udp_ipv6", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello", "extender_udp443", "extender_udp4053", "extender_udp53", "proxy_ipv6_probe":
+	case "p2p_source_binding":
+		switch strings.ToLower(value) {
+		case "off", "count", "drop":
+		default:
+			return fmt.Errorf("p2p-source-binding: must be off, count or drop (got %q)", value)
+		}
+	case "p2p_forged_source_drop", "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "proxy_dualstack", "proxy_udp_ipv6", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello", "extender_udp443", "extender_udp4053", "extender_udp53", "proxy_ipv6_probe":
 		switch strings.ToLower(value) {
 		case "on", "off":
 		default:
