@@ -372,8 +372,12 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				m.copyFrame(buf)
 			case topLingerEnable:
 				// The fix runs here, on the loop's own goroutine: it may hand
-				// the terminal to a sudo prompt, so nothing else may draw.
-				m.enableLingering(scr)
+				// the terminal to a sudo prompt, so nothing else may draw. A
+				// terminal that did not come back cannot take a frame or a key,
+				// so top ends and the caller reports the error.
+				if err := m.enableLingering(scr); err != nil {
+					return err
+				}
 				lingerBusy, lingerAt = false, m.now()
 			}
 			if !move || m.hoverSignature() != before {

@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/urnetwork/connect/internal/tui"
 	"github.com/urnetwork/connect/internal/tui/tcellui"
 )
@@ -58,6 +59,7 @@ func lingerChecks(t *testing.T, answers map[string]bool) *int {
 type fakeLingerTerminal struct {
 	calls      []string
 	suspendErr error
+	resumeErr  error
 }
 
 func (f *fakeLingerTerminal) Suspend() error {
@@ -67,7 +69,7 @@ func (f *fakeLingerTerminal) Suspend() error {
 
 func (f *fakeLingerTerminal) Resume() error {
 	f.calls = append(f.calls, "resume")
-	return nil
+	return f.resumeErr
 }
 
 // run is the command recorder: it appends a readable line per command.
@@ -481,6 +483,58 @@ func TestLingerCtrlCBelongsToTheChildCommand(t *testing.T) {
 	m.enableLingering(&fakeLingerTerminal{})
 	if topSignalIgnore.Load() {
 		t.Fatal("the signal guard stayed on after the command")
+	}
+}
+
+func TestLingerFailedResumeIsReported(t *testing.T) {
+	m, _ := lingerModel(t, false)
+	lingerSeams(t, func(name string, args []string, interactive bool) error {
+		if name == "loginctl" {
+			return errors.New("denied")
+		}
+		return nil
+	}, false, true)
+	lingerChecks(t, map[string]bool{"alice": true})
+	term := &fakeLingerTerminal{resumeErr: errors.New("tcell: could not take the terminal back")}
+	err := m.enableLingering(term)
+	if err == nil || !strings.Contains(err.Error(), "tcell: could not take the terminal back") {
+		t.Fatalf("the failed resume was dropped: %v", err)
+	}
+	if strings.ContainsAny(err.Error(), "\n") {
+		t.Fatalf("the error is not one line: %q", err)
+	}
+	// The terminal never came back, so nothing is claimed about the fix and the
+	// reading stays as it was.
+	if strings.Contains(m.notice, "Lingering enabled") {
+		t.Fatalf("notice = %q", m.notice)
+	}
+	if !m.lingerBannerActive() {
+		t.Fatal("the banner went away without a recheck that says on")
+	}
+}
+
+func TestLingerFailedResumeEndsTop(t *testing.T) {
+	m, _ := lingerModel(t, false)
+	lingerSeams(t, func(name string, args []string, interactive bool) error {
+		if name == "loginctl" {
+			return errors.New("denied")
+		}
+		return nil
+	}, false, true)
+	lingerChecks(t, map[string]bool{"alice": true})
+	src, _ := fakeSource(t)
+	rig := startLoop(t, m, src, 100, 30)
+	rig.scr.failResume.Store(true)
+	// L opens the dialog, y confirms, and the sudo path then cannot take the
+	// terminal back.
+	rig.sim.InjectKey(tcell.KeyRune, 'L', 0)
+	rig.sim.InjectKey(tcell.KeyRune, 'y', 0)
+	err := rig.wait(t)
+	if err == nil {
+		t.Fatal("top kept running without a terminal")
+	}
+	if !strings.Contains(err.Error(), "the terminal did not come back") || !strings.Contains(err.Error(), "resume failed") {
+		t.Fatalf("error = %q", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package tcellui
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -111,11 +112,26 @@ func TestScreenResumeReportsAFailedResume(t *testing.T) {
 	if err := scr.Resume(); err == nil {
 		t.Fatal("a failed resume should report the error")
 	}
-	// A failed resume still clears the suspended state, so the screen is not
-	// stuck refusing draws for the rest of the session.
+	// The terminal never came back, so the screen stays suspended and a frame
+	// must not reach it.
 	b := tui.New(10, 2)
 	b.Put("x", 0, 0, tui.Style{})
 	scr.Draw(b)
+	if got := simText(sim); got != "" {
+		t.Fatalf("a draw reached a terminal that did not come back:\n%q", got)
+	}
+	// A later Resume tries again, and the frame goes out once it succeeds.
+	fake.failResume = false
+	if err := scr.Resume(); err != nil {
+		t.Fatalf("the second Resume: %v", err)
+	}
+	if fake.resumes != 2 {
+		t.Fatalf("terminal resumes = %d, want 2", fake.resumes)
+	}
+	scr.Draw(b)
+	if got := simText(sim); !strings.Contains(got, "x") {
+		t.Fatalf("no frame after the terminal came back:\n%q", got)
+	}
 }
 
 // simText reads the simulated terminal as text, one line per row.

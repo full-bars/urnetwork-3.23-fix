@@ -119,7 +119,9 @@ type Screen interface {
 	Suspend() error
 	// Resume takes the terminal over again after Suspend. The mouse setting
 	// that was in force is applied again, and the next Draw repaints the whole
-	// screen. A Resume with nothing suspended changes nothing.
+	// screen. A Resume with nothing suspended changes nothing. A Resume that
+	// fails leaves the screen suspended, so Draw stays off the terminal and a
+	// later Resume tries again.
 	Resume() error
 	// Events is the input stream. It ends (after an EventQuit) once the screen
 	// is closed.
@@ -239,9 +241,9 @@ func (self *screen) Suspend() error {
 }
 
 // Resume takes the terminal back and reapplies the mouse setting that was in
-// force, so a session that was in Keyboard Mode stays in it. The suspended
-// state is cleared even when the terminal refuses, because a screen that stays
-// suspended would ignore every draw for the rest of the session.
+// force, so a session that was in Keyboard Mode stays in it. A failed resume
+// leaves the screen suspended: the terminal never came back, so Draw keeps the
+// frames off it and a later Resume tries again.
 func (self *screen) Resume() error {
 	self.mu.Lock()
 	defer self.mu.Unlock()
@@ -253,20 +255,20 @@ func (self *screen) Resume() error {
 	if !self.suspended {
 		return nil
 	}
+	if err := self.s.Resume(); err != nil {
+		return err
+	}
 	self.suspended = false
-	err := self.s.Resume()
-	if err == nil {
-		if self.mouseDisabled {
-			self.s.DisableMouse()
-		} else {
-			self.s.EnableMouse()
-		}
+	if self.mouseDisabled {
+		self.s.DisableMouse()
+	} else {
+		self.s.EnableMouse()
 	}
 	self.resized.Store(true)
 	// The mouse epoch moves so the pump re-reads the setting: a suspension can
 	// change what the terminal reports even when top's own mode did not change.
 	self.mouseEpoch.Add(1)
-	return err
+	return nil
 }
 
 // Close finalizes the terminal exactly once. tcell's Fini unblocks PollEvent,

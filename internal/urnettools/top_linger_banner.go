@@ -322,46 +322,50 @@ type topLingerTerminal interface {
 // enableLingering runs the fix for every user still off. The caller is the run
 // loop, so the terminal this blocks is the only one top owns. It never claims
 // success without a recheck: what the banner shows afterwards comes from
-// loginctl, not from the command's exit status.
-func (m *topModel) enableLingering(term topLingerTerminal) {
+// loginctl, not from the command's exit status. A terminal that does not come
+// back is returned as an error: nothing can be drawn on it and no key can be
+// read, so top cannot go on.
+func (m *topModel) enableLingering(term topLingerTerminal) error {
 	users := m.lingerOffUsers()
 	if len(users) == 0 || m.lingerFix.running {
-		return
+		return nil
 	}
 	m.lingerFix.running = true
 	defer func() { m.lingerFix.running = false }()
 	for _, user := range users {
 		if !topLingerValidUser(user) {
 			m.setNotice("Lingering not enabled: " + user + " is not a plain account name.")
-			return
+			return nil
 		}
 	}
 	args := append([]string{"enable-linger"}, users...)
 	plain := "loginctl " + strings.Join(args, " ")
 	if err := topLingerRunFn("loginctl", args, false); err == nil {
 		m.finishLingering(users, plain, "")
-		return
+		return nil
 	}
 	if topLingerRootFn() {
 		m.finishLingering(users, plain, "loginctl refused")
-		return
+		return nil
 	}
 	if _, err := topLingerSudoFn("sudo"); err != nil {
 		m.setNotice("Lingering not enabled: sudo is not installed. Run this in a root shell: sudo " + plain)
-		return
+		return nil
 	}
 	// The password prompt has to be readable, so the terminal goes back to the
 	// shell for the length of the command and is taken over again after. The
 	// deferred resume covers a panic in the command; the explicit one before
-	// the recheck gives the screen back as soon as the child is done.
+	// the recheck gives the screen back as soon as the child is done. Both go
+	// through the same once so the terminal is resumed one time only.
 	var resume func()
+	var resumeErr error
 	if term != nil {
 		if err := term.Suspend(); err == nil {
 			once := false
 			resume = func() {
 				if !once {
 					once = true
-					term.Resume()
+					resumeErr = term.Resume()
 				}
 			}
 			defer resume()
@@ -376,11 +380,15 @@ func (m *topModel) enableLingering(term topLingerTerminal) {
 	if resume != nil {
 		resume()
 	}
+	if resumeErr != nil {
+		return fmt.Errorf("the terminal did not come back after the lingering fix: %s", topLingerFirstLine(resumeErr))
+	}
 	if runErr != nil {
 		m.finishLingering(users, "sudo "+plain, topLingerFirstLine(runErr))
-		return
+		return nil
 	}
 	m.finishLingering(users, "sudo "+plain, "")
+	return nil
 }
 
 // finishLingering rechecks the users and reports what loginctl actually says.
