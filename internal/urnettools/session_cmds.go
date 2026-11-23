@@ -449,7 +449,7 @@ func readYesNo(prompt string) bool {
 // parser.
 func cmdSession(args []string) error {
 	if hasHelpFlag(args) {
-		fmt.Fprint(os.Stderr, `urnet-tools session — export/import provider identity + proxy state
+		fmt.Fprint(os.Stderr, logoHelp(`urnet-tools session — export/import provider identity + proxy state
 
 Usage: urnet-tools session save <file> [target]
        urnet-tools session load <file> [target] [-f] [-n] [--allow-different-account]
@@ -464,7 +464,7 @@ Examples:
   urnet-tools session save ~/urnet-session.enc               # Linux / macOS
   urnet-tools session save C:\Users\<you>\urnet-session.enc   # Windows (\ or / separators)
   urnet-tools session load ~/urnet-session.enc --unit urnetwork-native.service
-`)
+`))
 		return nil
 	}
 	if len(args) == 0 {
