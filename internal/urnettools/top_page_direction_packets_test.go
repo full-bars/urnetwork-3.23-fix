@@ -125,7 +125,9 @@ func TestTopPacketSeriesASCIIGlyph(t *testing.T) {
 }
 
 // Bytes and packets are two scale groups, so each curve reaches its own peak.
-// Drawn on the byte scale the packet curve would sit on the baseline.
+// Drawn on the byte scale the packet curve would sit on the baseline. Both
+// directions share the packet scale, as in the client app, so it is the
+// larger of the two packet peaks.
 func TestTopPacketSeriesScalesOnItsOwnPeak(t *testing.T) {
 	s := packetsFixture(t)
 	th := tui.DefaultTheme()
@@ -134,24 +136,14 @@ func TestTopPacketSeriesScalesOnItsOwnPeak(t *testing.T) {
 	if !ok {
 		t.Fatal("direction data missing")
 	}
-	for _, c := range []struct {
-		group string
-		vals  []float64
-	}{
-		{"billable upload packets", pUp},
-		{"billable download packets", pDown},
-	} {
-		want := remoteWindowPeak(remoteChart{Interval: interval, Window: remoteDefaultWindow}, c.vals)
-		if want <= 0 {
-			t.Fatalf("%s: no packet peak in the fixture", c.group)
-		}
-		scale := m.directionScales[c.group]
-		if scale == nil {
-			t.Fatalf("%s: no scale state", c.group)
-		}
-		if got := scale.valueAt(m.now()); got-want > 1e-6 || want-got > 1e-6 {
-			t.Fatalf("%s scales to %f, want the packet peak %f", c.group, got, want)
-		}
+	window := remoteChart{Interval: interval, Window: remoteDefaultWindow}
+	want := max(remoteWindowPeak(window, pUp), remoteWindowPeak(window, pDown), remotePacketFloor)
+	scale := m.directionScales["billable upload|shared packets"]
+	if scale == nil {
+		t.Fatal("no shared packet scale state")
+	}
+	if got := scale.valueAt(m.now()); got-want > 1e-6 || want-got > 1e-6 {
+		t.Fatalf("the packet scale is %f, want the larger packet peak %f", got, want)
 	}
 	bytesStyle, packetsStyle := remotePalette(th)
 	byteRows, byteCells := styleCells(b, bytesStyle)

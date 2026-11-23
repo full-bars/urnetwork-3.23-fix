@@ -238,15 +238,23 @@ func drawRemoteSummary(b *tui.Buffer, c remoteChart) {
 }
 
 // scaleKey is the scale group a series draws against: its own group, or with
-// Shared one group for all bytes and one for all packets.
+// Shared one group for all bytes and one for all packets. The shared names
+// carry the chart's first group, so two charts that keep their easing state in
+// one map do not share a scale.
 func (c remoteChart) scaleKey(s remoteSeries) string {
 	if !c.Shared {
 		return s.Group
 	}
-	if s.Packets {
-		return "shared packets"
+	prefix := ""
+	if len(c.Up) > 0 {
+		prefix = c.Up[0].Group
+	} else if len(c.Down) > 0 {
+		prefix = c.Down[0].Group
 	}
-	return "shared bytes"
+	if s.Packets {
+		return prefix + "|shared packets"
+	}
+	return prefix + "|shared bytes"
 }
 
 // remoteScales folds the window peak of every scale group into its easing state

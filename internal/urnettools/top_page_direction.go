@@ -25,9 +25,9 @@ func (m *topModel) directionAvailable() bool {
 	return m.snap != nil && m.snap.Traffic != nil && m.snap.Traffic.Directions != nil
 }
 
-// directionGroups names the two scale groups of a page. Each half eases on its
-// own peak: upload is a fraction of download on most links, and one shared
-// height would flatten the smaller curve to nothing.
+// directionGroups names the scale groups of a page. The chart is drawn with
+// Shared, so both directions draw against one byte scale and one packet scale,
+// as in the client app; the names keep the pages from sharing easing state.
 func directionGroups(page string) (up, down string) {
 	return page + " upload", page + " download"
 }
@@ -117,6 +117,7 @@ func (m *topModel) drawDirectionPage(b *tui.Buffer, content tui.Rect, id, title 
 		Interval: interval,
 		Window:   m.remoteWindow(),
 		Scales:   m.directionScales,
+		Shared:   true,
 		ASCII:    th.ASCII,
 		Dim:      th.Dim,
 		Text:     th.Accent,

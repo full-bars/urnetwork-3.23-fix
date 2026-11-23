@@ -140,3 +140,55 @@ func TestTopRemotePagePacketsGolden(t *testing.T) {
 		assertGolden(t, "top_page_remote_packets_"+c.name, text)
 	}
 }
+
+// skewedPackets is packetsFixture with an upload a sixth of the download in
+// bytes and in packets.
+func skewedPackets(t *testing.T) *NodeSnapshot {
+	s := packetsFixture(t)
+	d, p := s.Traffic.Directions, s.Traffic.Packets
+	for i := range d.BillableTx.HistoryBps {
+		d.BillableTx.HistoryBps[i] = d.BillableRx.HistoryBps[i] / 6
+	}
+	for i := range p.BillableTx.HistoryPps {
+		p.BillableTx.HistoryPps[i] = p.BillableRx.HistoryPps[i] / 6
+	}
+	return s
+}
+
+// halfReach is how many rows above and below the baseline row carry dots
+// inside the box.
+func halfReach(t *testing.T, m *topModel, b *tui.Buffer) (up, down int) {
+	t.Helper()
+	box := regionRect(t, m, "box:"+topPages[m.page].id)
+	in := b.Sub(tui.Rect{X: box.X + 1, Y: box.Y + 1, W: box.W - 2, H: box.H - 2})
+	l := remoteLayout(in.Width(), in.Height())
+	for y := l.upY; y < l.center; y++ {
+		if rowDots(in, y) > 0 {
+			up = max(up, l.center-y)
+		}
+	}
+	for y := l.center + 1; y < l.downY+l.downRows; y++ {
+		if rowDots(in, y) > 0 {
+			down = max(down, y-l.center)
+		}
+	}
+	return up, down
+}
+
+// Up and down share one byte scale and one packet scale, as in the client
+// app, on page 2 and on the Billable and Total pages: an upload a sixth of the
+// download stays well below the download's reach.
+func TestTopMirroredPagesShareOneScale(t *testing.T) {
+	for _, id := range []string{"remote", "billable", "total"} {
+		s := skewedPackets(t)
+		d := s.Traffic.Directions
+		for i := range d.TotalTx.HistoryBps {
+			d.TotalTx.HistoryBps[i] = d.TotalRx.HistoryBps[i] / 6
+		}
+		m, b, text := packetsPageModel(t, tui.DefaultTheme(), s, 120, 40, id)
+		up, down := halfReach(t, m, b)
+		if down == 0 || up*2 > down {
+			t.Errorf("%s: the upload reaches %d rows and the download %d, want the upload well below:\n%s", id, up, down, text)
+		}
+	}
+}

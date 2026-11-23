@@ -134,11 +134,6 @@ func snapshotDirRates(s *NodeSnapshot, i, n int) topDirRates {
 	return out
 }
 
-// topRemoteSharedScale draws both halves of page 2 against one byte scale and
-// one packet scale, as the client app does, instead of one scale per half. It
-// is an internal switch for comparing the two, not a user setting.
-var topRemoteSharedScale = false
-
 // drawRemote draws the Remote panel from the model alone.
 func (m *topModel) drawRemote(b *tui.Buffer) {
 	th := m.theme
@@ -161,10 +156,13 @@ func (m *topModel) drawRemote(b *tui.Buffer) {
 			Interval: interval,
 			Window:   m.remoteWindow(),
 			Scales:   m.remoteScales,
-			Shared:   topRemoteSharedScale,
-			ASCII:    th.ASCII,
-			Dim:      th.Dim,
-			Text:     th.Accent,
+			// One byte scale and one packet scale for both halves, as in
+			// the client app, so a small upload looks small next to a big
+			// download.
+			Shared: true,
+			ASCII:  th.ASCII,
+			Dim:    th.Dim,
+			Text:   th.Accent,
 		})
 		return
 	}
