@@ -118,3 +118,35 @@ func TestRemotePacketCurveHasNoFill(t *testing.T) {
 		t.Fatalf("the packet curve has %d fill cells:\n%s", pinkFill, b.String())
 	}
 }
+
+// With Shared, both halves draw against one byte scale, as in the client app:
+// a small upload next to a large download stays small. Without it each half
+// reaches its own top.
+func TestRemoteSharedScale(t *testing.T) {
+	l := remoteLayout(15)
+	draw := func(shared bool) (upTop, downBottom int) {
+		c := remoteTestChart(remoteSpike(60, 30, 72*1024, 0), remoteSpike(60, 30, 449*1024, 0))
+		c.Shared = shared
+		b := tui.New(60, 15)
+		drawRemoteChart(b, c)
+		downBottom = l.center
+		for y := l.downY; y < l.downY+l.downRows; y++ {
+			if rowDots(b, y) > 0 {
+				downBottom = y
+			}
+		}
+		return topmostDots(b, l.upY, l.center), downBottom
+	}
+	upTop, downBottom := draw(false)
+	if upTop != l.upY || downBottom != l.downY+l.downRows-1 {
+		t.Fatalf("per-half scales: both halves must reach their edge, got rows %d and %d", upTop, downBottom)
+	}
+	upTop, downBottom = draw(true)
+	if downBottom != l.downY+l.downRows-1 {
+		t.Fatalf("shared scale: the larger half must reach its edge, got row %d", downBottom)
+	}
+	// 72 of 449 KiB/s is about a sixth of the half.
+	if rows := l.center - upTop; rows > (l.upRows+5)/6+1 {
+		t.Fatalf("shared scale: the small upload takes %d of %d rows", rows, l.upRows)
+	}
+}
