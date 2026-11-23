@@ -44,7 +44,7 @@ func TestTopRemotePageDrawsPackets(t *testing.T) {
 		}
 	}
 	box := regionRect(t, m, "box:remote")
-	l := remoteLayout(box.H - 2)
+	l := remoteLayout(box.W-2, box.H-2)
 	center := box.Y + 1 + l.center
 	upper := b.Sub(tui.Rect{X: box.X, Y: box.Y, W: box.W, H: center - box.Y})
 	lower := b.Sub(tui.Rect{X: box.X, Y: center + 1, W: box.W, H: box.Y + box.H - center - 1})

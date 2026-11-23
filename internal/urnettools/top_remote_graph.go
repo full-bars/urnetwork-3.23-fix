@@ -117,10 +117,14 @@ func (s *remoteScale) valueAt(now time.Time) float64 {
 	return s.from + (s.to-s.from)*eased
 }
 
-// remoteLayout places the parts of one frame: the legends and the up averages
-// on the first row, the up plot, the center line, the down plot and the down
-// averages on the last row. A peak label row is reserved inside a half when the
-// half is tall enough, so a label never sits on the curve.
+// remoteLayout places the parts of one frame. On a frame of 9 rows or more it
+// follows the client app: the up figures on the first row and the down
+// figures on the second, both right-aligned, then the up peak label, the up
+// plot, the center row, the down plot and the down peak label. The plot is
+// flat like the app's: each half is about remoteAspect times narrower than
+// the frame is wide, counted in braille dots, and the rows below it stay
+// empty. A shorter frame keeps the up figures on top and the down figures on
+// the last row, with no peak labels.
 type remoteChartLayout struct {
 	header, footer, center int
 	upY, upRows            int
@@ -128,10 +132,27 @@ type remoteChartLayout struct {
 	upPeak, downPeak       int // -1 when the half has no room for a label
 }
 
-func remoteLayout(h int) remoteChartLayout {
+// remoteAspect is how many times wider the frame is than one half of the
+// plot, in dots. The app's chart is 128 dp tall with its labels, which makes a
+// half about a ninth of the width.
+const remoteAspect = 9
+
+func remoteLayout(w, h int) remoteChartLayout {
 	l := remoteChartLayout{header: 0, footer: h - 1, upPeak: -1, downPeak: -1}
 	if h < 3 {
 		l.footer = -1
+		return l
+	}
+	if h >= 9 {
+		// A dot is about as wide as it is tall, so a half of 2w/aspect dots
+		// is w/(2*aspect) rows of four dots.
+		half := int(math.Round(float64(w) / (2 * remoteAspect)))
+		half = min(max(half, 2), (h-5)/2)
+		l.footer = 1
+		l.upPeak, l.upY, l.upRows = 2, 3, half
+		l.center = l.upY + half
+		l.downY, l.downRows = l.center+1, half
+		l.downPeak = l.downY + half
 		return l
 	}
 	plotRows := h - 3
@@ -140,13 +161,6 @@ func remoteLayout(h int) remoteChartLayout {
 	l.center = 1 + l.upRows
 	l.upY = 1
 	l.downY = l.center + 1
-	if l.upRows >= 2 {
-		l.upPeak, l.upY, l.upRows = l.upY, l.upY+1, l.upRows-1
-	}
-	if l.downRows >= 2 {
-		l.downPeak = l.downY + l.downRows - 1
-		l.downRows--
-	}
 	return l
 }
 
@@ -179,22 +193,22 @@ func drawRemoteChart(b *tui.Buffer, c remoteChart) {
 		c.Interval = time.Second
 	}
 	scales := remoteScales(c)
-	l := remoteLayout(h)
+	l := remoteLayout(w, h)
 
 	if len(c.Up) == 0 && len(c.Down) == 0 {
 		b.Put(tui.Truncate("remote: waiting for traffic", w, c.ASCII), 0, l.header, c.Dim)
 		return
 	}
 	c.drawAverages(b, l.header, c.Up, '▲')
-	for x := 0; x < w; x++ {
-		ch := '─'
-		if c.ASCII {
-			ch = '-'
+	if c.ASCII {
+		for x := 0; x < w; x++ {
+			b.Set(x, l.center, tui.Cell{Rune: '-', Style: c.Dim})
 		}
-		b.Set(x, l.center, tui.Cell{Rune: ch, Style: c.Dim})
+		c.drawHalfASCIIAll(b, l, c.Up, true, scales)
+		c.drawHalfASCIIAll(b, l, c.Down, false, scales)
+	} else {
+		c.drawPlot(b, l, scales)
 	}
-	c.drawHalf(b, l, c.Up, true, scales)
-	c.drawHalf(b, l, c.Down, false, scales)
 	c.drawPeak(b, c.Up, true, l.upPeak)
 	c.drawPeak(b, c.Down, false, l.downPeak)
 	if l.footer >= 0 {
@@ -449,10 +463,10 @@ func (c remoteChart) legendWidth(dir []remoteSeries) int {
 	return tui.StringWidth(strings.Join(labels, " ")) + 2
 }
 
-// drawHalf draws every curve of one half into the rows the layout gave it.
-// A packet series with no positive sample draws nothing: its corner figure
-// still says so, muted, and the half keeps its bytes-only picture.
-func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSeries, up bool, scales map[string]float64) {
+// drawHalfASCIIAll draws every curve of one half with characters, for
+// terminals without braille. A packet series with no positive sample draws
+// nothing: its corner figure still says so, muted.
+func (c remoteChart) drawHalfASCIIAll(b *tui.Buffer, l remoteChartLayout, dir []remoteSeries, up bool, scales map[string]float64) {
 	y0, rows := l.upY, l.upRows
 	if !up {
 		y0, rows = l.downY, l.downRows
@@ -460,25 +474,8 @@ func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSe
 	if rows < 1 || len(dir) == 0 {
 		return
 	}
-	if c.ASCII {
-		// Draw from the back so the first series (the byte curve) lands on top
-		// of the packet curve in the cells they share.
-		for i := len(dir) - 1; i >= 0; i-- {
-			s := dir[i]
-			if s.Packets && !anyPositive(s.Values) {
-				continue
-			}
-			pts := remotePointsOf(c, s.Values, 2*b.Width())
-			if len(pts) == 0 {
-				continue
-			}
-			c.drawHalfASCII(b, s, pts, scales[c.scaleKey(s)], up, y0, rows, i)
-		}
-		return
-	}
-	cv := newRemoteCanvas(b.Width(), rows, dir)
-	// The byte series is first and must stay readable, so it is plotted last
-	// and wins the cells where a packet curve crosses it.
+	// Draw from the back so the first series (the byte curve) lands on top
+	// of the packet curve in the cells they share.
 	for i := len(dir) - 1; i >= 0; i-- {
 		s := dir[i]
 		if s.Packets && !anyPositive(s.Values) {
@@ -488,9 +485,41 @@ func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSe
 		if len(pts) == 0 {
 			continue
 		}
-		cv.plot(pts, scales[c.scaleKey(s)], up, i, !s.Packets)
+		c.drawHalfASCII(b, s, pts, scales[c.scaleKey(s)], up, y0, rows, i)
 	}
-	cv.draw(b, y0)
+}
+
+// drawPlot draws both halves and the baseline into one braille canvas that
+// spans the up rows, the center row and the down rows. The baseline is a dot
+// row of the center row, so a curve starts on it and an idle stretch lies on
+// it, as in the client app.
+func (c remoteChart) drawPlot(b *tui.Buffer, l remoteChartLayout, scales map[string]float64) {
+	rows := l.upRows + 1 + l.downRows
+	if rows < 1 {
+		return
+	}
+	all := append(append([]remoteSeries{}, c.Up...), c.Down...)
+	cv := newRemoteCanvas(b.Width(), rows, l.upRows*4+1, all, c.Dim)
+	for half, dir := range [][]remoteSeries{c.Up, c.Down} {
+		offset := 0
+		if half == 1 {
+			offset = len(c.Up)
+		}
+		// The byte series is first and must stay readable, so it is plotted
+		// last and wins the cells where a packet curve crosses it.
+		for i := len(dir) - 1; i >= 0; i-- {
+			s := dir[i]
+			if s.Packets && !anyPositive(s.Values) {
+				continue
+			}
+			pts := remotePointsOf(c, s.Values, 2*b.Width())
+			if len(pts) == 0 {
+				continue
+			}
+			cv.plot(pts, scales[c.scaleKey(s)], half == 0, offset+i, !s.Packets)
+		}
+	}
+	cv.draw(b, l.upY)
 }
 
 // anyPositive reports whether a series carries at least one positive sample.
@@ -561,87 +590,87 @@ func (c remoteChart) drawPeak(b *tui.Buffer, dir []remoteSeries, up bool, row in
 	b.Put(text, x, row, c.Dim)
 }
 
-// remoteCanvas collects the dots of one half. A cell can carry only one color,
-// so the curve wins over the fill and a later series wins over an earlier one
-// in the few cells where two curves cross.
+// remoteCanvas collects the dots of the plot: both halves and the baseline
+// dot row between them. A cell can carry only one color, so a curve wins over
+// the baseline and the fill, and a later series wins over an earlier one in
+// the few cells where two curves cross. The baseline dots are kept in a curve
+// cell, so the line stays whole under a curve.
 type remoteCanvas struct {
 	cells, rows int
+	base        int   // dot row of the baseline
 	curve, fill []int // series index + 1; 0 is empty
 	styles      []tui.Style
+	baseStyle   tui.Style
 }
 
-func newRemoteCanvas(cells, rows int, dir []remoteSeries) *remoteCanvas {
-	cv := &remoteCanvas{cells: cells, rows: rows, curve: make([]int, cells*2*rows*4), fill: make([]int, cells*2*rows*4)}
-	cv.styles = make([]tui.Style, len(dir))
-	for i, s := range dir {
+func newRemoteCanvas(cells, rows, base int, series []remoteSeries, baseStyle tui.Style) *remoteCanvas {
+	cv := &remoteCanvas{cells: cells, rows: rows, base: base, curve: make([]int, cells*2*rows*4), fill: make([]int, cells*2*rows*4), baseStyle: baseStyle}
+	cv.styles = make([]tui.Style, len(series))
+	for i, s := range series {
 		cv.styles[i] = s.Style
 	}
 	return cv
 }
 
 func (cv *remoteCanvas) setCurve(x, y, idx int) {
-	if x < 0 || y < 0 || x >= cv.cells*2 || y >= cv.rows*4 {
+	if x < 0 || y < 0 || x >= cv.cells*2 || y >= cv.rows*4 || y == cv.base {
 		return
 	}
 	cv.curve[y*cv.cells*2+x] = idx + 1
 }
 
 func (cv *remoteCanvas) setFill(x, y, idx int) {
-	if x < 0 || y < 0 || x >= cv.cells*2 || y >= cv.rows*4 {
+	if x < 0 || y < 0 || x >= cv.cells*2 || y >= cv.rows*4 || y == cv.base {
 		return
 	}
 	cv.fill[y*cv.cells*2+x] = idx + 1
 }
 
-// plot draws one curve: the value at every dot column, the gap between
-// neighbouring columns filled so the line has no breaks, and, with fill set,
-// a stippled fill between the curve and the center line. The client app fills
-// under the byte curve only and draws the packet curve as a line.
+// plot draws one curve, one dot thick: the value at every dot column, with the
+// gap between neighboring columns joined so the line has no breaks. A zero
+// lies on the baseline, and a rise or a fall starts from it. With fill set, a
+// dim hatch of one dot in eight shades the area between the curve and the
+// baseline, a quiet stand-in for the client app's translucent fill.
 func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int, fill bool) {
 	if scale <= 0 {
 		scale = 1
 	}
-	maxH := float64(cv.rows*4 - 1)
-	prev, prevH := -1, 0
+	maxH := cv.base
+	if !up {
+		maxH = cv.rows*4 - 1 - cv.base
+	}
+	if maxH < 1 {
+		return
+	}
+	prev, prevH := cv.base, 0
 	for x := 0; x < cv.cells*2; x++ {
 		frac := max(0, remoteCurveAt(pts, float64(x))) / scale
 		// A curve drawn while an ease is still under it can exceed its half;
 		// clamping the fraction keeps the conversion to an int well defined.
-		h := int(math.Round(min(frac, 1) * maxH))
-		h = min(max(h, 0), cv.rows*4-1)
-		// A zero lies on the center line, which the chart draws already, as
-		// in the client app. Only the foot of a rise or a fall touches the
-		// row beside it.
-		if h == 0 && (prev < 0 || prevH == 0) {
-			prev, prevH = 0, 0
-			if up {
-				prev = cv.rows*4 - 1
-			}
+		// The height rounds down, so a rate under one dot lies on the
+		// baseline the way a quiet stretch does in the app.
+		h := int(math.Floor(min(frac, 1) * float64(maxH)))
+		h = min(max(h, 0), maxH)
+		y := cv.base - h
+		if !up {
+			y = cv.base + h
+		}
+		if h == 0 && prevH == 0 {
+			prev = cv.base
 			continue
 		}
-		var y, base int
-		if up {
-			base, y = cv.rows*4-1, cv.rows*4-1-h
-		} else {
-			base, y = 0, h
-		}
-		var lo, hi int
-		if up {
-			lo, hi = y+1, base
-		} else {
-			lo, hi = base, y-1
-		}
-		for yy := lo; fill && yy <= hi; yy++ {
-			// A diagonal stipple, one dot in three: a wash under the curve that
-			// reads as a filled area without competing with the line.
-			if (x+yy)%3 == 0 {
-				cv.setFill(x, yy, idx)
+		if fill {
+			for k := 1; k < h; k++ {
+				yy := cv.base - k
+				if !up {
+					yy = cv.base + k
+				}
+				if (x+2*k)%8 == 0 {
+					cv.setFill(x, yy, idx)
+				}
 			}
 		}
-		a, z := y, y
-		if prev >= 0 {
-			a, z = min(prev, y), max(prev, y)
-		}
+		a, z := min(prev, y), max(prev, y)
 		for yy := a; yy <= z; yy++ {
 			cv.setCurve(x, yy, idx)
 		}
@@ -653,10 +682,14 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int,
 func (cv *remoteCanvas) draw(b *tui.Buffer, y0 int) {
 	for r := 0; r < cv.rows; r++ {
 		for x := 0; x < cv.cells; x++ {
-			var mask, fillMask rune
+			var mask, baseMask, fillMask rune
 			var st, fst tui.Style
 			for k := 0; k < 4; k++ {
 				y := r*4 + (3 - k) // k counts from the bottom dot of the cell
+				if y == cv.base {
+					baseMask |= remoteBrailleLeft[k] | remoteBrailleRight[k]
+					continue
+				}
 				if idx := cv.curve[y*cv.cells*2+2*x]; idx != 0 {
 					mask |= remoteBrailleLeft[k]
 					st = cv.styles[idx-1]
@@ -665,18 +698,20 @@ func (cv *remoteCanvas) draw(b *tui.Buffer, y0 int) {
 					mask |= remoteBrailleRight[k]
 					st = cv.styles[idx-1]
 				}
-				if idx := cv.fill[y*cv.cells*2+2*x]; idx != 0 && mask == 0 {
+				if idx := cv.fill[y*cv.cells*2+2*x]; idx != 0 {
 					fillMask |= remoteBrailleLeft[k]
 					fst = cv.styles[idx-1]
 				}
-				if idx := cv.fill[y*cv.cells*2+2*x+1]; idx != 0 && mask == 0 {
+				if idx := cv.fill[y*cv.cells*2+2*x+1]; idx != 0 {
 					fillMask |= remoteBrailleRight[k]
 					fst = cv.styles[idx-1]
 				}
 			}
 			switch {
 			case mask != 0:
-				b.Set(x, y0+r, tui.Cell{Rune: 0x2800 + mask, Style: st})
+				b.Set(x, y0+r, tui.Cell{Rune: 0x2800 + mask | baseMask, Style: st})
+			case baseMask != 0:
+				b.Set(x, y0+r, tui.Cell{Rune: 0x2800 + baseMask, Style: cv.baseStyle})
 			case fillMask != 0:
 				fst.Attrs |= tui.AttrDim
 				b.Set(x, y0+r, tui.Cell{Rune: 0x2800 + fillMask, Style: fst})

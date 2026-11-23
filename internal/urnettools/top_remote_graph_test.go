@@ -237,8 +237,9 @@ func TestRemoteScaleEasingInFrame(t *testing.T) {
 
 // TestRemoteStyles checks the colors the braille dots and the fill carry.
 func TestRemoteStyles(t *testing.T) {
+	// Wide enough for the sparse hatch under the burst to show.
 	c := remoteTestChart(remoteSpike(60, 30, 100*1024, 0), nil)
-	b := tui.New(40, 10)
+	b := tui.New(60, 15)
 	drawRemoteChart(b, c)
 	green, dim := 0, 0
 	for y := 0; y < b.Height(); y++ {
@@ -299,7 +300,7 @@ func TestRemoteWithoutScaleState(t *testing.T) {
 	c.Scales = nil
 	b := tui.New(40, 10)
 	drawRemoteChart(b, c)
-	l := remoteLayout(10)
+	l := remoteLayout(40, 10)
 	for x := 0; x < b.Width(); x++ {
 		if r := b.Cell(x, l.upY).Rune; r < 0x2800 || r > 0x28ff {
 			t.Fatalf("the curve does not reach the top of its half without scale state:\n%s", b.String())

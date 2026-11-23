@@ -23,7 +23,7 @@ func TestRemoteZeroLiesOnTheCenterLine(t *testing.T) {
 	c := remoteTestChart(remoteFlat(60, 0), remoteFlat(60, 0))
 	b := tui.New(60, 15)
 	drawRemoteChart(b, c)
-	l := remoteLayout(15)
+	l := remoteLayout(60, 15)
 	if n := rowDots(b, l.center-1) + rowDots(b, l.center+1); n != 0 {
 		t.Fatalf("an idle chart draws %d dots beside the center line:\n%s", n, b.String())
 	}
@@ -63,7 +63,7 @@ func TestRemoteScaleFloors(t *testing.T) {
 	c := remoteTestChart(noise, nil)
 	b := tui.New(60, 15)
 	drawRemoteChart(b, c)
-	l := remoteLayout(15)
+	l := remoteLayout(60, 15)
 	// 80 B/s of a 1 KiB/s scale is under a tenth of the half.
 	if top := topmostDots(b, l.upY, l.center); top < l.center-1 {
 		t.Fatalf("80 B/s of noise reaches row %d of a half that starts at %d:\n%s", top, l.upY, b.String())
@@ -123,7 +123,7 @@ func TestRemotePacketCurveHasNoFill(t *testing.T) {
 // a small upload next to a large download stays small. Without it each half
 // reaches its own top.
 func TestRemoteSharedScale(t *testing.T) {
-	l := remoteLayout(15)
+	l := remoteLayout(60, 15)
 	draw := func(shared bool) (upTop, downBottom int) {
 		c := remoteTestChart(remoteSpike(60, 30, 72*1024, 0), remoteSpike(60, 30, 449*1024, 0))
 		c.Shared = shared
