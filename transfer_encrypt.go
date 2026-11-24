@@ -2828,20 +2828,35 @@ func (self *EncryptionSessionManager) ServesPostQuantumEncryption() bool {
 // stuck probe from blocking the claim.
 const tlsDefaultProbeTimeout = time.Second
 
+// tlsDefaultProbeRetryInterval paces the measurement after a probe that did not
+// complete. The interval keeps a probe that cannot complete from running on
+// every claim while still letting the answer follow the process once the local
+// condition clears.
+const tlsDefaultProbeRetryInterval = 30 * time.Second
+
 var (
 	tlsDefaultReceiverHybridLock     sync.Mutex
 	tlsDefaultReceiverHybridGodebug  string
 	tlsDefaultReceiverHybridOffers   bool
 	tlsDefaultReceiverHybridMeasured bool
+	tlsDefaultReceiverHybridRetryAt  time.Time
 )
+
+// tlsDefaultHybridProbe is replaceable so tests can force the incomplete path.
+var tlsDefaultHybridProbe = measureTlsDefaultReceiverHybrid
 
 // tlsDefaultReceiverOffersHybrid reports whether an empty `CurvePreferences`,
 // the crypto/tls default key exchange list, offers the X25519MLKEM768 hybrid to
 // a TLS 1.3 receiver in this process. crypto/tls resolves that list at handshake
 // time and leaves the hybrid out of it under `GODEBUG=tlsmlkem=0`, so the
-// answer is measured with a loopback handshake rather than restated here. The
-// result is kept per `GODEBUG` value, the only input to the default list that
-// can change while the process runs.
+// answer is measured with a loopback handshake rather than restated here. A
+// completed measurement is kept per `GODEBUG` value, the only input to the
+// default list that can change while the process runs.
+//
+// A probe that does not complete says nothing about the list, so its answer is
+// not kept. The conservative false holds for `tlsDefaultProbeRetryInterval`
+// and the list is measured again after that, so a deadline that fired during a
+// pause in the process does not decide the answer for the life of the process.
 func tlsDefaultReceiverOffersHybrid() bool {
 	godebug := os.Getenv("GODEBUG")
 	tlsDefaultReceiverHybridLock.Lock()
@@ -2849,21 +2864,35 @@ func tlsDefaultReceiverOffersHybrid() bool {
 	if tlsDefaultReceiverHybridMeasured && tlsDefaultReceiverHybridGodebug == godebug {
 		return tlsDefaultReceiverHybridOffers
 	}
-	tlsDefaultReceiverHybridOffers = measureTlsDefaultReceiverHybrid()
+	if tlsDefaultReceiverHybridGodebug == godebug && time.Now().Before(tlsDefaultReceiverHybridRetryAt) {
+		// the last probe under this setting did not complete
+		return false
+	}
+	offers, measured := tlsDefaultHybridProbe()
 	tlsDefaultReceiverHybridGodebug = godebug
-	tlsDefaultReceiverHybridMeasured = true
-	return tlsDefaultReceiverHybridOffers
+	if measured {
+		tlsDefaultReceiverHybridOffers = offers
+		tlsDefaultReceiverHybridMeasured = true
+		tlsDefaultReceiverHybridRetryAt = time.Time{}
+		return offers
+	}
+	tlsDefaultReceiverHybridOffers = false
+	tlsDefaultReceiverHybridMeasured = false
+	tlsDefaultReceiverHybridRetryAt = time.Now().Add(tlsDefaultProbeRetryInterval)
+	return false
 }
 
 // measureTlsDefaultReceiverHybrid runs one loopback TLS 1.3 handshake against a
 // receiver that leaves its curve list at the default, with a client that offers
 // only the hybrid. The hybrid can be negotiated only if the receiver's default
-// list carries it. Any failure reports false: the claim is made only for a
-// hybrid that was observed to negotiate.
-func measureTlsDefaultReceiverHybrid() bool {
+// list carries it. A completed handshake reports what it negotiated. A peer
+// that answers with an alert has taken part in the exchange and declined the
+// hybrid, which is an answer; a local failure such as an expired deadline or a
+// closed pipe leaves the answer unknown.
+func measureTlsDefaultReceiverHybrid() (offers bool, measured bool) {
 	cert, err := generateSequenceTlsCertificate()
 	if err != nil {
-		return false
+		return false, false
 	}
 	serverConn, clientConn := net.Pipe()
 	defer serverConn.Close()
@@ -2888,9 +2917,17 @@ func measureTlsDefaultReceiverHybrid() bool {
 		_ = server.Handshake()
 	}()
 	if err := client.Handshake(); err != nil {
-		return false
+		return false, tlsHandshakeDeclined(err)
 	}
-	return client.ConnectionState().CurveID == tls.X25519MLKEM768
+	return client.ConnectionState().CurveID == tls.X25519MLKEM768, true
+}
+
+// tlsHandshakeDeclined reports whether a handshake error is an alert the peer
+// sent. A peer alert ends an exchange the peer took part in; any other error is
+// a local failure that leaves the outcome unmeasured.
+func tlsHandshakeDeclined(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "remote error"
 }
 
 // SendNoSession reports whether a SendSequence to `destinationId` should run

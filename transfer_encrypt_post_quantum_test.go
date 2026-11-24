@@ -4,7 +4,36 @@ import (
 	"context"
 	"crypto/tls"
 	"testing"
+	"time"
 )
+
+// resetTlsDefaultReceiverHybridCache puts the process-wide measurement back to
+// the unmeasured state, so a test that replaces the probe starts from a clean
+// cache and leaves one behind.
+func resetTlsDefaultReceiverHybridCache(t *testing.T) {
+	t.Helper()
+	restore := func() {
+		tlsDefaultReceiverHybridLock.Lock()
+		defer tlsDefaultReceiverHybridLock.Unlock()
+		tlsDefaultHybridProbe = measureTlsDefaultReceiverHybrid
+		tlsDefaultReceiverHybridGodebug = ""
+		tlsDefaultReceiverHybridOffers = false
+		tlsDefaultReceiverHybridMeasured = false
+		tlsDefaultReceiverHybridRetryAt = time.Time{}
+	}
+	restore()
+	t.Cleanup(restore)
+}
+
+// tlsDefaultHybridCacheState reads the cached measurement and its retry time.
+func tlsDefaultHybridCacheState() (offers bool, measured bool, godebug string, retryAt time.Time) {
+	tlsDefaultReceiverHybridLock.Lock()
+	defer tlsDefaultReceiverHybridLock.Unlock()
+	return tlsDefaultReceiverHybridOffers,
+		tlsDefaultReceiverHybridMeasured,
+		tlsDefaultReceiverHybridGodebug,
+		tlsDefaultReceiverHybridRetryAt
+}
 
 // The declaration is a claim about what this manager will actually serve: the
 // session layer has to be on, the identity a requiring peer verifies against
@@ -290,4 +319,52 @@ func TestServesPostQuantumEncryptionNeedsTheHybridGroup(t *testing.T) {
 	advertised, present = testingProvidePostQuantumEncryption(t, frame)
 	AssertEqual(t, present, true)
 	AssertEqual(t, advertised, true)
+}
+
+// A probe that does not complete says nothing about the default list. The claim
+// answers false for the retry interval, which bounds how often an incomplete
+// probe runs, and the list is measured again afterwards, so a deadline that
+// fired during a pause in the process does not decide the answer for the life
+// of the process.
+func TestServesPostQuantumEncryptionRecoversFromIncompleteProbe(t *testing.T) {
+	resetTlsDefaultReceiverHybridCache(t)
+	t.Setenv("GODEBUG", "")
+
+	probeCalls := 0
+	tlsDefaultHybridProbe = func() (bool, bool) {
+		probeCalls++
+		// a deadline expired before the receiver answered
+		return false, false
+	}
+
+	// the first claim takes an incomplete measurement and answers conservatively
+	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), false)
+	AssertEqual(t, probeCalls, 1)
+	offers, measured, godebug, retryAt := tlsDefaultHybridCacheState()
+	AssertEqual(t, offers, false)
+	AssertEqual(t, measured, false)
+	AssertEqual(t, godebug, "")
+	if !retryAt.After(time.Now()) {
+		t.Fatalf("an incomplete probe must schedule a retry, retryAt = %v", retryAt)
+	}
+
+	// inside the retry interval the conservative answer holds without probing
+	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), false)
+	AssertEqual(t, probeCalls, 1)
+
+	// the pause clears; once the interval has passed, the next claim measures
+	// again and follows what it finds
+	tlsDefaultHybridProbe = func() (bool, bool) {
+		probeCalls++
+		return true, true
+	}
+	tlsDefaultReceiverHybridLock.Lock()
+	tlsDefaultReceiverHybridRetryAt = time.Time{}
+	tlsDefaultReceiverHybridLock.Unlock()
+	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), true)
+	AssertEqual(t, probeCalls, 2)
+
+	// the completed answer is kept
+	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), true)
+	AssertEqual(t, probeCalls, 2)
 }
