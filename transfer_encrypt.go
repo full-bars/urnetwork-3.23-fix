@@ -18,6 +18,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"os"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -2811,9 +2812,85 @@ func (self *EncryptionSessionManager) ServesPostQuantumEncryption() bool {
 	if 0 < self.serverTlsConfig.MaxVersion && self.serverTlsConfig.MaxVersion < tls.VersionTLS13 {
 		return false
 	}
-	// an empty list is the crypto/tls default, which leads with the hybrid
+	// an empty list is the crypto/tls default, which this build resolves per
+	// handshake and which GODEBUG=tlsmlkem=0 shortens; an explicit list is
+	// taken as given either way
 	curves := self.serverTlsConfig.CurvePreferences
-	return len(curves) == 0 || slices.Contains(curves, tls.X25519MLKEM768)
+	if 0 < len(curves) {
+		return slices.Contains(curves, tls.X25519MLKEM768)
+	}
+	return tlsDefaultReceiverOffersHybrid()
+}
+
+// tlsDefaultProbeTimeout bounds the loopback handshake that measures the
+// crypto/tls default key exchange list. The handshake runs over an in-memory
+// pipe and completes in well under a millisecond; the deadline only keeps a
+// stuck probe from blocking the claim.
+const tlsDefaultProbeTimeout = time.Second
+
+var (
+	tlsDefaultReceiverHybridLock     sync.Mutex
+	tlsDefaultReceiverHybridGodebug  string
+	tlsDefaultReceiverHybridOffers   bool
+	tlsDefaultReceiverHybridMeasured bool
+)
+
+// tlsDefaultReceiverOffersHybrid reports whether an empty `CurvePreferences`,
+// the crypto/tls default key exchange list, offers the X25519MLKEM768 hybrid to
+// a TLS 1.3 receiver in this process. crypto/tls resolves that list at handshake
+// time and leaves the hybrid out of it under `GODEBUG=tlsmlkem=0`, so the
+// answer is measured with a loopback handshake rather than restated here. The
+// result is kept per `GODEBUG` value, the only input to the default list that
+// can change while the process runs.
+func tlsDefaultReceiverOffersHybrid() bool {
+	godebug := os.Getenv("GODEBUG")
+	tlsDefaultReceiverHybridLock.Lock()
+	defer tlsDefaultReceiverHybridLock.Unlock()
+	if tlsDefaultReceiverHybridMeasured && tlsDefaultReceiverHybridGodebug == godebug {
+		return tlsDefaultReceiverHybridOffers
+	}
+	tlsDefaultReceiverHybridOffers = measureTlsDefaultReceiverHybrid()
+	tlsDefaultReceiverHybridGodebug = godebug
+	tlsDefaultReceiverHybridMeasured = true
+	return tlsDefaultReceiverHybridOffers
+}
+
+// measureTlsDefaultReceiverHybrid runs one loopback TLS 1.3 handshake against a
+// receiver that leaves its curve list at the default, with a client that offers
+// only the hybrid. The hybrid can be negotiated only if the receiver's default
+// list carries it. Any failure reports false: the claim is made only for a
+// hybrid that was observed to negotiate.
+func measureTlsDefaultReceiverHybrid() bool {
+	cert, err := generateSequenceTlsCertificate()
+	if err != nil {
+		return false
+	}
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+	deadline := time.Now().Add(tlsDefaultProbeTimeout)
+	serverConn.SetDeadline(deadline)
+	clientConn.SetDeadline(deadline)
+	server := tls.Server(serverConn, &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
+		MaxVersion:   tls.VersionTLS13,
+	})
+	// the client names the hybrid explicitly, which crypto/tls takes as given,
+	// so the receiver's default list decides the outcome
+	client := tls.Client(clientConn, &tls.Config{
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS13,
+		MaxVersion:         tls.VersionTLS13,
+		CurvePreferences:   []tls.CurveID{tls.X25519MLKEM768},
+	})
+	go func() {
+		_ = server.Handshake()
+	}()
+	if err := client.Handshake(); err != nil {
+		return false
+	}
+	return client.ConnectionState().CurveID == tls.X25519MLKEM768
 }
 
 // SendNoSession reports whether a SendSequence to `destinationId` should run

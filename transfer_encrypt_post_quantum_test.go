@@ -13,6 +13,8 @@ import (
 // post-quantum session from declaring that it can.
 
 func TestServesPostQuantumEncryptionBranches(t *testing.T) {
+	// the empty-list cases follow the process default, so pin the default
+	t.Setenv("GODEBUG", "")
 	cert, err := generateSequenceTlsCertificate()
 	AssertEqual(t, err, nil)
 	selfCertPem := certificateToPemChain([]tls.Certificate{cert})
@@ -212,10 +214,53 @@ func TestServesPostQuantumEncryptionRequiresTls13(t *testing.T) {
 	}
 }
 
+// An empty CurvePreferences is the crypto/tls default group list, and
+// crypto/tls leaves X25519MLKEM768 out of that list when the process restores
+// the pre-go 1.24 key exchanges with GODEBUG=tlsmlkem=0. The claim follows the
+// list the receiver will actually negotiate; an explicit list is taken as given
+// with or without the setting.
+func TestServesPostQuantumEncryptionDefaultFollowsTlsMlKem(t *testing.T) {
+	cert, err := generateSequenceTlsCertificate()
+	AssertEqual(t, err, nil)
+	selfCertPem := certificateToPemChain([]tls.Certificate{cert})
+	clientKeyManager := &ClientKeyManager{}
+
+	newManager := func(config *tls.Config) *EncryptionSessionManager {
+		return &EncryptionSessionManager{
+			settings:         &EncryptionSettings{Mode: EncryptionModeOpportunistic},
+			clientKeyManager: clientKeyManager,
+			serverTlsConfig:  config,
+			selfCertPem:      selfCertPem,
+		}
+	}
+	defaultGroups := &tls.Config{Certificates: []tls.Certificate{cert}}
+	hybridGroups := &tls.Config{
+		Certificates:     []tls.Certificate{cert},
+		CurvePreferences: []tls.CurveID{tls.X25519MLKEM768},
+	}
+
+	t.Setenv("GODEBUG", "tlsmlkem=1")
+	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), true)
+	AssertEqual(t, newManager(defaultGroups).ServesPostQuantumEncryption(), true)
+	AssertEqual(t, newManager(hybridGroups).ServesPostQuantumEncryption(), true)
+
+	t.Setenv("GODEBUG", "tlsmlkem=0")
+	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), false)
+	AssertEqual(t, newManager(defaultGroups).ServesPostQuantumEncryption(), false)
+	// the setting changes the default list only, never an explicit one
+	AssertEqual(t, newManager(hybridGroups).ServesPostQuantumEncryption(), true)
+
+	t.Setenv("GODEBUG", "")
+	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), true)
+	AssertEqual(t, newManager(defaultGroups).ServesPostQuantumEncryption(), true)
+}
+
 // The receiver-role TLS config has to offer the X25519MLKEM768 hybrid for a
 // session to be post-quantum. A caller-supplied config that leaves it out
 // serves classical sessions only, and does not advertise.
 func TestServesPostQuantumEncryptionNeedsTheHybridGroup(t *testing.T) {
+	// the empty-list case follows the process default, so pin the default
+	t.Setenv("GODEBUG", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
