@@ -385,3 +385,89 @@ func TestRunTopGlideTimerLifecycleAndStaticPages(t *testing.T) {
 		}
 	})
 }
+
+func TestRemoteNewestValueEase(t *testing.T) {
+	// A series that jumps from 10 KiB/s to 100 KiB/s on the newest sample.
+	vals := remoteFlat(60, 10*1024)
+	vals[59] = 100 * 1024
+	origLast := vals[59]
+
+	c := remoteTestChart(vals, nil)
+	c.Newest = topBase
+
+	pointAt := func(after time.Duration) float64 {
+		ch := c
+		ch.Now = topBase.Add(after)
+		// 240 dots -> 80 buckets > 61 samples, so the test observes the exact
+		// eased newest point without bucket averaging.
+		pts := remotePlotPoints(ch, vals, 240)
+		if len(pts) == 0 {
+			t.Fatalf("no points at +%v", after)
+		}
+		return pts[len(pts)-1].v
+	}
+
+	// At arrival (t=0): eased value starts at the previous sample (10 KiB/s).
+	if got := pointAt(0); got != 10*1024 {
+		t.Fatalf("t=0 newest point = %.1f, want %.1f", got, 10*1024.0)
+	}
+	// Halfway through the 500ms ease: ease-out cubic is 1 - 0.5^3 = 0.875.
+	wantMid := 10*1024 + (100*1024-10*1024)*0.875
+	if got := pointAt(remoteSampleEase / 2); got < wantMid-1 || got > wantMid+1 {
+		t.Fatalf("t=250ms newest point = %.1f, want %.1f", got, wantMid)
+	}
+	// At and after 500ms: settles at the full new value.
+	if got := pointAt(remoteSampleEase); got != 100*1024 {
+		t.Fatalf("t=500ms newest point = %.1f, want %.1f", got, 100*1024.0)
+	}
+	if got := pointAt(800 * time.Millisecond); got != 100*1024 {
+		t.Fatalf("t=800ms newest point = %.1f, want %.1f", got, 100*1024.0)
+	}
+
+	// Stored values are never modified.
+	if vals[59] != origLast {
+		t.Fatalf("stored newest sample was mutated to %.1f, want %.1f", vals[59], origLast)
+	}
+
+	// Scale calculation still sees the real newest peak at t=0.
+	c.Now = topBase
+	if pts := remotePointsOf(c, vals, 240); pts[len(pts)-1].v != 100*1024 {
+		t.Fatalf("scale points newest = %.1f at t=0, want full %.1f", pts[len(pts)-1].v, 100*1024.0)
+	}
+
+	// Single-sample series eases from 0.
+	single := []float64{4096}
+	cs := remoteTestChart(single, nil)
+	cs.Newest = topBase
+	cs.Now = topBase
+	if pts := remotePlotPoints(cs, single, 240); pts[len(pts)-1].v != 0 {
+		t.Fatalf("single sample at t=0 = %.1f, want 0", pts[len(pts)-1].v)
+	}
+	cs.Now = topBase.Add(remoteSampleEase)
+	if pts := remotePlotPoints(cs, single, 240); pts[len(pts)-1].v != 4096 {
+		t.Fatalf("single sample at t=500ms = %.1f, want 4096", pts[len(pts)-1].v)
+	}
+
+	// Rendering a frame at t=0 vs t=500ms with the same dot clock changes only
+	// the right edge; the left half of the plot is identical.
+	w, h := 60, 15
+	l := remoteLayout(w, h)
+	baseGrid := func(after time.Duration) [][]bool {
+		ch := c
+		ch.Window = 15 * time.Minute // dot step > 500ms so dot clock does not move
+		ch.Now = topBase.Add(after)
+		ch.Scales = map[string]*remoteScale{}
+		b := tui.New(w, h)
+		drawRemoteChart(b, ch)
+		return remoteDotGrid(b, l.upY, l.upRows+1, ch.Dim)
+	}
+	g0 := baseGrid(0)
+	g500 := baseGrid(remoteSampleEase)
+	for y := range g0 {
+		for x := 0; x < len(g0[y])/2; x++ {
+			if g0[y][x] != g500[y][x] {
+				t.Fatalf("newest-sample ease changed left half of plot at dot (%d,%d)", x, y)
+			}
+		}
+	}
+}
