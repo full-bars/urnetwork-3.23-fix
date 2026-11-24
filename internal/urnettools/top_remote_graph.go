@@ -127,14 +127,26 @@ func (s *remoteScale) target(peak float64, now time.Time) {
 	s.from, s.to, s.start = s.valueAt(now), peak, now
 }
 
+// remoteEaseProgress is the ease-out cubic fraction in [0, 1] for elapsed time
+// over dur, matching the client app's TRANSITION_MILLIS easing.
+func remoteEaseProgress(elapsed, dur time.Duration) float64 {
+	if dur <= 0 || elapsed >= dur {
+		return 1
+	}
+	if elapsed <= 0 {
+		return 0
+	}
+	p := float64(elapsed) / float64(dur)
+	q := 1 - p
+	return 1 - q*q*q
+}
+
 // valueAt is the eased scale at now.
 func (s *remoteScale) valueAt(now time.Time) float64 {
 	if !s.set {
 		return 1
 	}
-	progress := float64(now.Sub(s.start)) / float64(remoteScaleEase)
-	progress = min(max(progress, 0), 1)
-	eased := 1 - math.Pow(1-progress, 3) // ease out cubic
+	eased := remoteEaseProgress(now.Sub(s.start), remoteScaleEase)
 	return s.from + (s.to-s.from)*eased
 }
 
@@ -523,7 +535,7 @@ func (c remoteChart) drawHalfASCIIAll(b *tui.Buffer, l remoteChartLayout, dir []
 		if s.Packets && !anyPositive(s.Values) {
 			continue
 		}
-		pts := remotePointsOf(c, s.Values, 2*b.Width())
+		pts := remotePlotPoints(c, s.Values, 2*b.Width())
 		if len(pts) == 0 {
 			continue
 		}
@@ -554,7 +566,7 @@ func (c remoteChart) drawPlot(b *tui.Buffer, l remoteChartLayout, scales map[str
 			if s.Packets && !anyPositive(s.Values) {
 				continue
 			}
-			pts := remotePointsOf(c, s.Values, 2*b.Width())
+			pts := remotePlotPoints(c, s.Values, 2*b.Width())
 			if len(pts) == 0 {
 				continue
 			}
@@ -604,7 +616,7 @@ func (c remoteChart) drawPeak(b *tui.Buffer, dir []remoteSeries, up bool, row in
 	if row < 0 || len(dir) == 0 {
 		return
 	}
-	pts := remotePointsIn(c, dir[0].Values, 2*b.Width(), math.MaxInt)
+	pts := remotePointsIn(c, dir[0].Values, 2*b.Width(), math.MaxInt, false)
 	if len(pts) == 0 {
 		return
 	}
@@ -869,12 +881,17 @@ func remoteDotClock(now time.Time, window time.Duration, dots int) time.Time {
 	return time.Unix(0, ns-ns%step)
 }
 
-// remotePointsOf places a series on the plot: samples inside the window, padded
-// with zeros back to the window start so the curve ramps in from the baseline,
-// held out to the clock, and bucketed by absolute time when there are more
-// samples than dot columns so a completed column never changes as time moves.
+// remotePointsOf places a series on the plot without easing the newest sample,
+// used by scale calculation so a new peak targets its full height at once.
 func remotePointsOf(c remoteChart, vals []float64, dots int) []remotePoint {
-	return remotePointsIn(c, vals, dots, remoteDrawBuckets(dots))
+	return remotePointsIn(c, vals, dots, remoteDrawBuckets(dots), false)
+}
+
+// remotePlotPoints places a series for drawing, easing the newest sample from
+// its previous value over remoteSampleEase so the right edge glides instead of
+// hopping. Stored values are never modified.
+func remotePlotPoints(c remoteChart, vals []float64, dots int) []remotePoint {
+	return remotePointsIn(c, vals, dots, remoteDrawBuckets(dots), true)
 }
 
 // remoteDrawBuckets is how many points a curve is drawn through: one bucket for
@@ -886,9 +903,10 @@ func remoteDrawBuckets(dots int) int {
 	return max(2, dots/3)
 }
 
-// remotePointsIn is remotePointsOf with an explicit bucket count. The peak
-// label passes no limit, so it names the highest real sample.
-func remotePointsIn(c remoteChart, vals []float64, dots, buckets int) []remotePoint {
+// remotePointsIn is remotePointsOf with an explicit bucket count and optional
+// newest-sample easing. The peak label passes no limit and ease=false, so it
+// names the highest real sample.
+func remotePointsIn(c remoteChart, vals []float64, dots, buckets int, ease bool) []remotePoint {
 	if dots < 2 || len(vals) == 0 || c.Window <= 0 || c.Interval <= 0 {
 		return nil
 	}
@@ -914,6 +932,17 @@ func remotePointsIn(c remoteChart, vals []float64, dots, buckets int) []remotePo
 	}
 	for i, j := 0, len(samples)-1; i < j; i, j = i+1, j-1 {
 		samples[i], samples[j] = samples[j], samples[i]
+	}
+	if ease && !c.Newest.IsZero() {
+		if elapsed := c.Now.Sub(c.Newest); elapsed < remoteSampleEase {
+			eased := remoteEaseProgress(elapsed, remoteSampleEase)
+			last := len(samples) - 1
+			prev := prevFiniteValue(vals)
+			if last > 0 {
+				prev = samples[last-1].v
+			}
+			samples[last].v = prev + (samples[last].v-prev)*eased
+		}
 	}
 	if first := time.Unix(0, samples[0].at); first.After(windowStart) {
 		var ramp []remoteSample

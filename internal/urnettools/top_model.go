@@ -161,6 +161,7 @@ type topModel struct {
 	interval  time.Duration
 	retry     time.Duration // pause between attempts on a silent provider
 	now       func() time.Time
+	newTimer  func(time.Duration) topTimer
 
 	conn      topConn
 	snap      *NodeSnapshot // last good snapshot of the current provider

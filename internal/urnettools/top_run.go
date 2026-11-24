@@ -272,6 +272,21 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
+	newTimer := m.newTimer
+	if newTimer == nil {
+		newTimer = newRealTopTimer
+	}
+	var glideTimer topTimer
+	var glideCh <-chan time.Time
+	stopGlide := func() {
+		if glideTimer != nil {
+			glideTimer.Stop()
+			glideTimer = nil
+			glideCh = nil
+		}
+	}
+	defer stopGlide()
+
 	buf := tui.New(0, 0)
 	defer func() {
 		if m.copyOnQuit && buf.Width() > 0 && buf.Height() > 0 {
@@ -283,6 +298,8 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 	// A screen is here, so the banner may offer the fix.
 	m.lingerFixable = true
 	var lastDraw time.Time
+	var lastSec int64
+	var wasNotice, wasSplash bool
 	dirty := true
 	for {
 		if _, ok := src.(socketTopSource); ok && !lingerBusy && (lingerAt.IsZero() || m.now().Sub(lingerAt) >= 30*time.Second) {
@@ -339,6 +356,7 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		// screen down the terminal link every time.
 		var frameWait <-chan time.Time
 		if dirty {
+			stopGlide()
 			if since := time.Since(lastDraw); lastDraw.IsZero() || since >= topMinFrame {
 				w, h := scr.Size()
 				buf.Resize(w, h)
@@ -346,8 +364,22 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				m.render(buf)
 				scr.Draw(buf)
 				lastDraw, dirty = time.Now(), false
+				now := m.now()
+				lastSec = now.Unix()
+				wasNotice = m.noticeActive()
+				wasSplash = m.splashCovering(now)
 			} else {
 				frameWait = time.After(topMinFrame - since)
+			}
+		}
+		if !dirty {
+			if delay, ok := m.glideDelay(m.now()); ok {
+				if glideTimer == nil {
+					glideTimer = newTimer(delay)
+					glideCh = glideTimer.Chan()
+				}
+			} else {
+				stopGlide()
 			}
 		}
 
@@ -355,6 +387,10 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		case <-ctx.Done():
 			return nil
 		case <-frameWait:
+		case <-glideCh:
+			glideTimer = nil
+			glideCh = nil
+			dirty = true
 		case ev, ok := <-scr.Events():
 			if !ok {
 				return nil
@@ -416,7 +452,10 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				m.apply(r.gen, r.snap, r.err)
 			}
 		case <-ticker.C:
-			dirty = true
+			now := m.now()
+			if now.Unix() != lastSec || wasNotice != m.noticeActive() || (wasSplash && !m.splashCovering(now)) {
+				dirty = true
+			}
 		}
 	}
 }
