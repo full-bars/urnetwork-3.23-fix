@@ -199,6 +199,8 @@ More columns than readings is the common case at the slower refresh speeds and t
 
 The Remote chart and the direction pages use the same scale. They read the one-second history, which holds about ten minutes, so the 15 minute scale is drawn there as the ten minutes the history carries.
 
+While a time graph is visible and moving (Overview graphs, Remote, Billable or Total), `top` schedules one render timer for the next dot column boundary, capped at 20 frames a second (50 ms minimum). A `10s` view scrolls at 20 fps and a `15m` view redraws every few seconds. The timer stops on off-graph pages such as Transports, when help or a dialog covers the graph, when disconnected, when the chart is static and on quit. On the mirrored transfer charts, the newest sample eases from the previous value over 500 ms so the right edge glides instead of hopping, while stored values, scales and peak labels keep the real readings.
+
 ## Peak rates in the Now panel
 
 The Now panel keeps the highest rates `top` has seen since it started, for billable and for total traffic. Three rows appear under `moved` when the panel has the room for them:
