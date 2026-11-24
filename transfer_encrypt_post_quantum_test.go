@@ -139,6 +139,79 @@ func TestServesPostQuantumEncryptionBranches(t *testing.T) {
 	}
 }
 
+// X25519MLKEM768 is a TLS 1.3 key exchange, so a receiver config whose version
+// interval excludes TLS 1.3 cannot negotiate it whatever its curve list names.
+// A zero bound is the crypto/tls default for that end of the interval and
+// leaves TLS 1.3 available.
+func TestServesPostQuantumEncryptionRequiresTls13(t *testing.T) {
+	cert, err := generateSequenceTlsCertificate()
+	AssertEqual(t, err, nil)
+	selfCertPem := certificateToPemChain([]tls.Certificate{cert})
+	clientKeyManager := &ClientKeyManager{}
+
+	newManager := func(config *tls.Config) *EncryptionSessionManager {
+		return &EncryptionSessionManager{
+			settings:         &EncryptionSettings{Mode: EncryptionModeOpportunistic},
+			clientKeyManager: clientKeyManager,
+			serverTlsConfig:  config,
+			selfCertPem:      selfCertPem,
+		}
+	}
+	hybrid := func(minVersion, maxVersion uint16) *tls.Config {
+		return &tls.Config{
+			Certificates:     []tls.Certificate{cert},
+			MinVersion:       minVersion,
+			MaxVersion:       maxVersion,
+			CurvePreferences: []tls.CurveID{tls.X25519MLKEM768},
+		}
+	}
+
+	cases := []struct {
+		name   string
+		config *tls.Config
+		serves bool
+	}{
+		{
+			name:   "tls 1.3 only",
+			config: hybrid(tls.VersionTLS13, tls.VersionTLS13),
+			serves: true,
+		},
+		{
+			name:   "default interval",
+			config: hybrid(0, 0),
+			serves: true,
+		},
+		{
+			name:   "tls 1.2 maximum with the hybrid group",
+			config: hybrid(0, tls.VersionTLS12),
+			serves: false,
+		},
+		{
+			name:   "tls 1.2 only",
+			config: hybrid(tls.VersionTLS12, tls.VersionTLS12),
+			serves: false,
+		},
+		{
+			name:   "minimum above tls 1.3",
+			config: hybrid(tls.VersionTLS13+1, 0),
+			serves: false,
+		},
+		{
+			name: "tls 1.2 maximum with the default groups",
+			config: &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MaxVersion:   tls.VersionTLS12,
+			},
+			serves: false,
+		},
+	}
+	for _, c := range cases {
+		if got := newManager(c.config).ServesPostQuantumEncryption(); got != c.serves {
+			t.Fatalf("%s: ServesPostQuantumEncryption() = %t, want %t", c.name, got, c.serves)
+		}
+	}
+}
+
 // The receiver-role TLS config has to offer the X25519MLKEM768 hybrid for a
 // session to be post-quantum. A caller-supplied config that leaves it out
 // serves classical sessions only, and does not advertise.

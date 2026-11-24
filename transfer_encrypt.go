@@ -2788,9 +2788,10 @@ func (self *EncryptionSessionManager) RequireEncryption() bool {
 // requires a post-quantum session: the session layer is on, the identity such a
 // peer verifies the session against is set up (the published TLS certificate,
 // signed with the client identity key), and the receiver-role TLS config offers
-// the X25519MLKEM768 hybrid. Every `Provide` the contract manager sends
-// advertises it. It is a claim for the platform's records, never for admission:
-// the requiring peer still verifies every session it seals with.
+// the X25519MLKEM768 hybrid to a peer it can reach TLS 1.3 with. Every
+// `Provide` the contract manager sends advertises it. It is a claim for the
+// platform's records, never for admission: the requiring peer still verifies
+// every session it seals with.
 func (self *EncryptionSessionManager) ServesPostQuantumEncryption() bool {
 	if self.settings == nil || self.settings.Mode == EncryptionModeOff || self.clientKeyManager == nil {
 		return false
@@ -2798,6 +2799,16 @@ func (self *EncryptionSessionManager) ServesPostQuantumEncryption() bool {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	if self.serverTlsConfig == nil || len(self.selfCertPem) == 0 {
+		return false
+	}
+	// X25519MLKEM768 is a TLS 1.3 key exchange, so a config whose version
+	// interval excludes 1.3 cannot negotiate it whatever its curve list names.
+	// A zero bound is the crypto/tls default for that end of the interval (a
+	// TLS 1.2 minimum and a TLS 1.3 maximum), which leaves 1.3 available.
+	if 0 < self.serverTlsConfig.MinVersion && tls.VersionTLS13 < self.serverTlsConfig.MinVersion {
+		return false
+	}
+	if 0 < self.serverTlsConfig.MaxVersion && self.serverTlsConfig.MaxVersion < tls.VersionTLS13 {
 		return false
 	}
 	// an empty list is the crypto/tls default, which leads with the hybrid
