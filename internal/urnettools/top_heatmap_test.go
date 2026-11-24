@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/urnetwork/connect"
 
 	"github.com/urnetwork/connect/internal/tui"
+	"github.com/urnetwork/connect/internal/tui/tcellui"
 )
 
 func makeProxyCells(states []uint8) []proxyCell {
@@ -392,6 +394,69 @@ func TestProxyGridFill(t *testing.T) {
 	stride := (l.width-1)/(l.cols-1) + 1
 	if l.width-1-right > stride {
 		t.Fatalf("right edge %d, stride %d", right, stride)
+	}
+}
+
+func TestProxyGridFillsPanelWidthAndHitTests(t *testing.T) {
+	cases := []struct {
+		name string
+		w, h int
+		n    int
+	}{
+		{"small_25_in_68x12", 68, 12, 25},
+		{"small_60_in_88x12", 88, 12, 60},
+		{"small_100_in_100x15", 100, 15, 100},
+		{"dense_900_in_68x12", 68, 12, 900},
+		{"dense_1000_in_68x12", 68, 12, 1000},
+		{"dense_1000_in_60x12", 60, 12, 1000},
+		{"dense_1000_in_50x12_lower_last", 50, 12, 1000},
+		{"grouped_4400_in_68x12", 68, 12, 4400},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := topHeatGridModel(t, tui.DefaultTheme(), tc.n)
+			b := tui.New(tc.w, tc.h+1)
+			m.drawProxyGrid(b)
+
+			minX, maxX := tc.w, -1
+			for y := 0; y < tc.h; y++ {
+				for x := 0; x < tc.w; x++ {
+					if r := b.Cell(x, y).Rune; r != ' ' && r != 0 {
+						minX = min(minX, x)
+						maxX = max(maxX, x)
+					}
+				}
+			}
+			drawnW := maxX - minX + 1
+			if maxX < 0 || drawnW < tc.w-1 {
+				t.Fatalf("drawn width = %d (x %d..%d), want within 1 cell of panel width %d", drawnW, minX, maxX, tc.w)
+			}
+
+			layout := newProxyGridLayout(tc.n, tc.w, tc.h)
+			capacity := layout.cols * layout.rows
+			for i := 0; i < tc.n; i++ {
+				pos := i % capacity
+				x, y, _ := layout.cellFor(pos)
+				if x < 0 || x >= tc.w || y < 0 || y >= tc.h {
+					t.Fatalf("proxy %d mapped out of bounds: (%d,%d)", i, x, y)
+				}
+				if r := b.Cell(x, y).Rune; r == ' ' || r == 0 {
+					t.Fatalf("proxy %d at (%d,%d) has blank cell", i, x, y)
+				}
+				if got := m.proxyCellAt(x, y); !slices.Contains(got, i) {
+					t.Fatalf("proxyCellAt(%d,%d) = %v, missing proxy %d", x, y, got, i)
+				}
+			}
+
+			// A click on the last cell selects the last proxy.
+			lastPos := (tc.n - 1) % capacity
+			lx, ly, _ := layout.cellFor(lastPos)
+			m.proxyPopupRect = tui.Rect{X: 2, Y: 3, W: tc.w, H: tc.h}
+			m.mouseHandle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, 2+lx, 3+ly))
+			if !m.proxyPopup || !slices.Contains(m.proxyPopupIndices, tc.n-1) {
+				t.Fatalf("click at last cell (%d,%d) popup=%v indices=%v, want proxy %d", lx, ly, m.proxyPopup, m.proxyPopupIndices, tc.n-1)
+			}
+		})
 	}
 }
 

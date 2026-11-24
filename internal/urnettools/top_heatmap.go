@@ -184,12 +184,14 @@ func gridCoordinate(i, count, size int) int {
 }
 
 // indices returns the two dense dot positions or the single sparse position.
+// Dense grids fill row-major across the full panel width so rows follow the
+// proxy count instead of leaving the right side of the panel empty.
 func (l proxyGridLayout) indices(x, y int) (int, int) {
 	if x < 0 || y < 0 || x >= l.width || y >= l.height || l.cols == 0 {
 		return -1, -1
 	}
 	if !l.sparse {
-		return x*l.rows + 2*y, x*l.rows + 2*y + 1
+		return (2*y)*l.cols + x, (2*y+1)*l.cols + x
 	}
 	col, row := -1, -1
 	for i := 0; i < l.cols; i++ {
@@ -217,7 +219,8 @@ func (l proxyGridLayout) cellFor(index int) (x, y int, upper bool) {
 	if l.sparse {
 		return gridCoordinate(index%l.cols, l.cols, l.width), gridCoordinate(index/l.cols, l.rows, l.height), true
 	}
-	return index / l.rows, (index % l.rows) / 2, index%2 == 0
+	dotRow := index / l.cols
+	return index % l.cols, dotRow / 2, dotRow%2 == 0
 }
 
 // drawProxyGrid draws the proxy heatmap into b: a grid of colored cells plus a
