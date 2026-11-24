@@ -3,6 +3,7 @@ package connect
 import (
 	"context"
 	"crypto/tls"
+	"os"
 	"testing"
 	"time"
 )
@@ -366,5 +367,45 @@ func TestServesPostQuantumEncryptionRecoversFromIncompleteProbe(t *testing.T) {
 
 	// the completed answer is kept
 	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), true)
+	AssertEqual(t, probeCalls, 2)
+}
+
+// The cache key has to be the GODEBUG value the measurement ran under. A
+// measurement that cannot be attributed to one setting is not kept, so a claim
+// is never answered from a measurement taken under a different setting. The
+// window between a read taken before the lock and the lock itself cannot be
+// forced deterministically from a test; a change while the probe runs covers the
+// same requirement, because the result then belongs to neither value.
+func TestServesPostQuantumEncryptionKeysTheCacheOnTheMeasuredGodebug(t *testing.T) {
+	resetTlsDefaultReceiverHybridCache(t)
+	t.Setenv("GODEBUG", "")
+
+	probeCalls := 0
+	tlsDefaultHybridProbe = func() (bool, bool) {
+		probeCalls++
+		// the setting changes while the handshake runs
+		os.Setenv("GODEBUG", "tlsmlkem=0")
+		return true, true
+	}
+	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), false)
+	AssertEqual(t, probeCalls, 1)
+	// the answer is not kept: it belongs to neither setting
+	offers, measured, _, _ := tlsDefaultHybridCacheState()
+	AssertEqual(t, offers, false)
+	AssertEqual(t, measured, false)
+
+	// the setting is stable now; that measurement is kept under the value it ran
+	// under, and the next claim is answered from the cache
+	tlsDefaultHybridProbe = func() (bool, bool) {
+		probeCalls++
+		return false, true
+	}
+	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), false)
+	AssertEqual(t, probeCalls, 2)
+	offers, measured, godebug, _ := tlsDefaultHybridCacheState()
+	AssertEqual(t, offers, false)
+	AssertEqual(t, measured, true)
+	AssertEqual(t, godebug, "tlsmlkem=0")
+	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), false)
 	AssertEqual(t, probeCalls, 2)
 }

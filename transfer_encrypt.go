@@ -2851,16 +2851,19 @@ var tlsDefaultHybridProbe = measureTlsDefaultReceiverHybrid
 // time and leaves the hybrid out of it under `GODEBUG=tlsmlkem=0`, so the
 // answer is measured with a loopback handshake rather than restated here. A
 // completed measurement is kept per `GODEBUG` value, the only input to the
-// default list that can change while the process runs.
+// default list that can change while the process runs, under the value the
+// handshake ran under.
 //
 // A probe that does not complete says nothing about the list, so its answer is
 // not kept. The conservative false holds for `tlsDefaultProbeRetryInterval`
 // and the list is measured again after that, so a deadline that fired during a
 // pause in the process does not decide the answer for the life of the process.
 func tlsDefaultReceiverOffersHybrid() bool {
-	godebug := os.Getenv("GODEBUG")
 	tlsDefaultReceiverHybridLock.Lock()
 	defer tlsDefaultReceiverHybridLock.Unlock()
+	// the setting is read under this lock and again once the probe returns, so
+	// a measurement is kept only under a value it can be attributed to
+	godebug := os.Getenv("GODEBUG")
 	if tlsDefaultReceiverHybridMeasured && tlsDefaultReceiverHybridGodebug == godebug {
 		return tlsDefaultReceiverHybridOffers
 	}
@@ -2869,6 +2872,11 @@ func tlsDefaultReceiverOffersHybrid() bool {
 		return false
 	}
 	offers, measured := tlsDefaultHybridProbe()
+	if os.Getenv("GODEBUG") != godebug {
+		// the setting changed while the handshake ran, so the result belongs to
+		// neither value and is not kept
+		measured = false
+	}
 	tlsDefaultReceiverHybridGodebug = godebug
 	if measured {
 		tlsDefaultReceiverHybridOffers = offers
