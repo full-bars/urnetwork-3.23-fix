@@ -21,25 +21,63 @@ func brailleRows(b *tui.Buffer) []int {
 	return rows
 }
 
-// The plot is wide and flat like the app's: each half is about a ninth of
-// the width in dots, however tall the page is, and both corner figures sit
-// on the top rows.
-func TestRemotePlotIsFlat(t *testing.T) {
-	c := remoteTestChart(remoteSpike(60, 30, 1<<20, 0), remoteSpike(60, 30, 1<<20, 0))
-	b := tui.New(118, 36)
-	drawRemoteChart(b, c)
-	rows := brailleRows(b)
-	if len(rows) == 0 {
-		t.Fatal("nothing drawn")
+// The plot fills the panel height for frames of 9 rows or more: each half gets
+// (h-5)/2 rows, both corner figures sit on the top rows, and a peaked series
+// touches the first and last plot rows.
+func TestRemotePlotFillsPanel(t *testing.T) {
+	for _, sz := range []struct{ w, h int }{
+		{80, 24},
+		{120, 40},
+		{250, 60},
+		{80, 25},
+		{120, 39},
+		{40, 9},
+	} {
+		l := remoteLayout(sz.w, sz.h)
+		wantHalf := (sz.h - 5) / 2
+		if l.upRows != wantHalf || l.downRows != wantHalf {
+			t.Fatalf("%dx%d: got upRows=%d downRows=%d, want %d", sz.w, sz.h, l.upRows, l.downRows, wantHalf)
+		}
+		if l.header != 0 || l.footer != 1 || l.upPeak != 2 || l.upY != 3 {
+			t.Fatalf("%dx%d: unexpected header/up layout %+v", sz.w, sz.h, l)
+		}
+		if l.center != l.upY+wantHalf || l.downY != l.center+1 || l.downPeak != l.downY+wantHalf {
+			t.Fatalf("%dx%d: unexpected center/down layout %+v", sz.w, sz.h, l)
+		}
+		wantDownPeak := sz.h - 1 - (sz.h-5)%2
+		if l.downPeak != wantDownPeak {
+			t.Fatalf("%dx%d: downPeak=%d, want %d", sz.w, sz.h, l.downPeak, wantDownPeak)
+		}
+
+		c := remoteTestChart(remoteSpike(60, 30, 1<<20, 0), remoteSpike(60, 30, 1<<20, 0))
+		b := tui.New(sz.w, sz.h)
+		drawRemoteChart(b, c)
+		rows := brailleRows(b)
+		if len(rows) == 0 {
+			t.Fatalf("%dx%d: nothing drawn", sz.w, sz.h)
+		}
+		if rows[0] != l.upY {
+			t.Fatalf("%dx%d: first plot row with dots is %d, want %d", sz.w, sz.h, rows[0], l.upY)
+		}
+		lastPlotRow := l.downY + l.downRows - 1
+		if rows[len(rows)-1] != lastPlotRow {
+			t.Fatalf("%dx%d: last plot row with dots is %d, want %d", sz.w, sz.h, rows[len(rows)-1], lastPlotRow)
+		}
+		lines := strings.Split(b.String(), "\n")
+		if !strings.Contains(lines[0], "▲") || !strings.Contains(lines[1], "▼") {
+			t.Fatalf("%dx%d: both corner figures must be on the top rows", sz.w, sz.h)
+		}
 	}
-	span := rows[len(rows)-1] - rows[0] + 1
-	// 236 dots wide: about 26 dots, 7 rows, per half, plus the line.
-	if span > 2*7+1 {
-		t.Fatalf("the plot spans %d rows of 36:\n%s", span, b.String())
-	}
-	lines := strings.Split(b.String(), "\n")
-	if !strings.Contains(lines[0], "▲") || !strings.Contains(lines[1], "▼") {
-		t.Fatalf("both corner figures must be on the top rows:\n%s", b.String())
+
+	// Short layouts (h < 9) keep the compact arrangement with no peak labels.
+	for _, h := range []int{3, 4, 5, 8} {
+		l := remoteLayout(40, h)
+		if l.header != 0 || l.footer != h-1 || l.upPeak != -1 || l.downPeak != -1 {
+			t.Fatalf("h=%d: unexpected compact layout %+v", h, l)
+		}
+		if l.upRows+l.downRows != h-3 {
+			t.Fatalf("h=%d: upRows=%d downRows=%d, want sum %d", h, l.upRows, l.downRows, h-3)
+		}
 	}
 }
 

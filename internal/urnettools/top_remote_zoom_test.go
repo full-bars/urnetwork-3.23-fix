@@ -60,16 +60,17 @@ func replayRemote(t *testing.T, replies []LiveTraffic, level, w, h int) (*topMod
 }
 
 // jumpColumns counts the dot columns of the plot where a curve runs straight
-// up or down for more than eight dots, two text rows: the wall of hanging
-// bars a noisy one second series draws when every sample reaches the plot.
-// The curve runs through its samples as the app's does, so a real burst is a
-// steep peak. Only a plot full of them is a wall.
+// up or down for more than a third of a half's dot height (at least eight
+// dots): the wall of hanging bars a noisy one second series draws when every
+// sample reaches the plot. The curve runs through its samples as the app's
+// does, so a real burst is a steep peak. Only a plot full of them is a wall.
 func jumpColumns(t *testing.T, m *topModel, b *tui.Buffer) int {
 	t.Helper()
 	box := regionRect(t, m, "box:remote")
 	in := b.Sub(tui.Rect{X: box.X + 1, Y: box.Y + 1, W: box.W - 2, H: box.H - 2})
 	l := remoteLayout(in.Width(), in.Height())
 	grid := remoteDotGrid(in, l.upY, l.upRows+1+l.downRows, tui.DefaultTheme().Dim)
+	limit := max(8, l.upRows*4/3)
 	n := 0
 	for x := range grid[0] {
 		run, worst := 0, 0
@@ -81,7 +82,7 @@ func jumpColumns(t *testing.T, m *topModel, b *tui.Buffer) int {
 				run = 0
 			}
 		}
-		if worst > 8 {
+		if worst > limit {
 			n++
 		}
 	}

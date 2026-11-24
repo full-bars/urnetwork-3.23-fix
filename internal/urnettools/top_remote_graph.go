@@ -139,12 +139,11 @@ func (s *remoteScale) valueAt(now time.Time) float64 {
 }
 
 // remoteLayout places the parts of one frame. On a frame of 9 rows or more it
-// follows the client app: the up figures on the first row and the down
-// figures on the second, both right-aligned, then the up peak label, the up
-// plot, the center row, the down plot and the down peak label. The plot is
-// flat like the app's: each half is about remoteAspect times narrower than
-// the frame is wide, counted in braille dots, and the rows below it stay
-// empty. A shorter frame keeps the up figures on top and the down figures on
+// puts the up figures on the first row and the down figures on the second, both
+// right-aligned, then the up peak label, the up plot, the center row, the down
+// plot and the down peak label. Both halves fill the remaining panel height
+// equally, with (h-5)/2 rows each; when h-5 is odd, the spare row stays at the
+// bottom. A shorter frame keeps the up figures on top and the down figures on
 // the last row, with no peak labels.
 type remoteChartLayout struct {
 	header, footer, center int
@@ -153,11 +152,6 @@ type remoteChartLayout struct {
 	upPeak, downPeak       int // -1 when the half has no room for a label
 }
 
-// remoteAspect is how many times wider the frame is than one half of the
-// plot, in dots. The app's chart is 128 dp tall with its labels, which makes a
-// half about a ninth of the width.
-const remoteAspect = 9
-
 func remoteLayout(w, h int) remoteChartLayout {
 	l := remoteChartLayout{header: 0, footer: h - 1, upPeak: -1, downPeak: -1}
 	if h < 3 {
@@ -165,10 +159,7 @@ func remoteLayout(w, h int) remoteChartLayout {
 		return l
 	}
 	if h >= 9 {
-		// A dot is about as wide as it is tall, so a half of 2w/aspect dots
-		// is w/(2*aspect) rows of four dots.
-		half := int(math.Round(float64(w) / (2 * remoteAspect)))
-		half = min(max(half, 2), (h-5)/2)
+		half := (h - 5) / 2
 		l.footer = 1
 		l.upPeak, l.upY, l.upRows = 2, 3, half
 		l.center = l.upY + half

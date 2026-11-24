@@ -22,8 +22,31 @@ func (m *topModel) drawRemotePage(b *tui.Buffer, content tui.Rect) {
 	th := m.theme
 	box := tui.DrawBox(b.Sub(content), "Remote", th.Frame, th.Border, th.Accent, th.ASCII)
 	m.record("box:remote", content)
-	m.drawRemote(box)
-	m.drawRemoteTransports(box)
+	chartH := m.remoteChartHeight(box)
+	m.drawRemote(box.Sub(tui.Rect{W: box.Width(), H: chartH}))
+	m.drawRemoteTransports(box, chartH)
+}
+
+// remoteChartHeight returns the rows given to the chart on page 2. When the
+// Transports block is ready and the box is tall enough for both, it reserves
+// room for Transports at the bottom so the chart fills the rest of the panel.
+func (m *topModel) remoteChartHeight(box *tui.Buffer) int {
+	shares, live, _, ready, ok := m.transportsData()
+	if !ok || !ready {
+		return box.Height()
+	}
+	if box.Width() <= 0 || box.Height() < 12 {
+		return box.Height()
+	}
+	th := m.theme
+	scratch := tui.New(box.Width(), box.Height())
+	pal := transportsPalette(th)
+	next := drawTransportLegend(scratch, 2, shares, live, pal, th)
+	need := 1 + drawTransportUnused(scratch, next, shares, live, th)
+	if box.Height()-need < 9 {
+		return box.Height()
+	}
+	return box.Height() - need
 }
 
 // drawRemoteTransports puts the Transports bar and its legend under the chart,
@@ -32,12 +55,12 @@ func (m *topModel) drawRemotePage(b *tui.Buffer, content tui.Rect) {
 // unused kinds, dim. It uses the drawing of the Transports page. Nothing is
 // drawn until the provider reports the transport block and a full window, or
 // when the rows under the chart cannot hold the bar and one legend row.
-func (m *topModel) drawRemoteTransports(box *tui.Buffer) {
+func (m *topModel) drawRemoteTransports(box *tui.Buffer, chartH int) {
 	shares, live, _, ready, ok := m.transportsData()
 	if !ok || !ready {
 		return
 	}
-	l := remoteLayout(box.Width(), box.Height())
+	l := remoteLayout(box.Width(), chartH)
 	if l.downPeak < 0 {
 		return
 	}
