@@ -2812,6 +2812,12 @@ func (self *EncryptionSessionManager) ServesPostQuantumEncryption() bool {
 	if 0 < self.serverTlsConfig.MaxVersion && self.serverTlsConfig.MaxVersion < tls.VersionTLS13 {
 		return false
 	}
+	// GetConfigForClient can replace this config for each connection. The
+	// callback's config decides the accepted key exchanges, so the list on
+	// this config cannot support a claim for callback-driven configurations.
+	if self.serverTlsConfig.GetConfigForClient != nil {
+		return false
+	}
 	// an empty list is the crypto/tls default, which this build resolves per
 	// handshake and which GODEBUG=tlsmlkem=0 shortens; an explicit list is
 	// taken as given either way

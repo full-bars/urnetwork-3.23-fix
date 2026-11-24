@@ -409,3 +409,57 @@ func TestServesPostQuantumEncryptionKeysTheCacheOnTheMeasuredGodebug(t *testing.
 	AssertEqual(t, tlsDefaultReceiverOffersHybrid(), false)
 	AssertEqual(t, probeCalls, 2)
 }
+
+// A caller can replace the receiver config for each connection through
+// GetConfigForClient. The callback's config then decides which key exchanges
+// the TLS server accepts, so the curve list on the parent config alone cannot
+// support a post-quantum claim.
+func TestServesPostQuantumEncryptionWithGetConfigForClient(t *testing.T) {
+	t.Setenv("GODEBUG", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cert, err := generateSequenceTlsCertificate()
+	AssertEqual(t, err, nil)
+
+	// The outer config lists the hybrid, but the callback selects a config
+	// that can answer only with classical key exchanges.
+	callbackConfig := &tls.Config{
+		Certificates:     []tls.Certificate{cert},
+		CurvePreferences: []tls.CurveID{tls.X25519MLKEM768, tls.X25519},
+	}
+	callbackConfig.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		return &tls.Config{
+			Certificates:     []tls.Certificate{cert},
+			CurvePreferences: []tls.CurveID{tls.X25519},
+		}, nil
+	}
+	resolved, _, _, err := resolveReceiveTlsConfig(callbackConfig, nil, nil)
+	AssertEqual(t, err, nil)
+	if resolved.GetConfigForClient == nil {
+		t.Fatal("the resolved receiver config lost GetConfigForClient")
+	}
+
+	client := testingProvideClient(t, ctx, EncryptionModeOpportunistic, callbackConfig)
+	AssertEqual(t, client.EncryptionSessionManager().ServesPostQuantumEncryption(), false)
+	frame, err := client.ContractManager().provideFrame()
+	AssertEqual(t, err, nil)
+	advertised, present := testingProvidePostQuantumEncryption(t, frame)
+	AssertEqual(t, present, false)
+	AssertEqual(t, advertised, false)
+
+	// An ordinary config that lists the hybrid is still claimed.
+	hybrid := &tls.Config{
+		Certificates:     []tls.Certificate{cert},
+		ClientAuth:       tls.RequireAnyClientCert,
+		MinVersion:       tls.VersionTLS13,
+		CurvePreferences: []tls.CurveID{tls.X25519MLKEM768, tls.X25519},
+	}
+	client = testingProvideClient(t, ctx, EncryptionModeOpportunistic, hybrid)
+	AssertEqual(t, client.EncryptionSessionManager().ServesPostQuantumEncryption(), true)
+	frame, err = client.ContractManager().provideFrame()
+	AssertEqual(t, err, nil)
+	advertised, present = testingProvidePostQuantumEncryption(t, frame)
+	AssertEqual(t, present, true)
+	AssertEqual(t, advertised, true)
+}
