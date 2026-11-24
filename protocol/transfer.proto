@@ -206,6 +206,13 @@ enum ProvideMode {
 
 message Provide {
     repeated ProvideKey keys = 1;
+    // Whether the sender serves the per-peer post-quantum encryption sessions
+    // that a client requiring post-quantum encryption opens: encryption is on,
+    // the identity-signed certificate is set up, and the receiver TLS config
+    // offers the X25519MLKEM768 hybrid. The platform records the declaration
+    // with the provide. A provide without it, which includes every provide
+    // sent before this field existed, counts as not capable.
+    bool post_quantum_encryption = 2;
 }
 
 

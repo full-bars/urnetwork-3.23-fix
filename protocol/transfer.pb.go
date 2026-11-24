@@ -974,10 +974,17 @@ func (x *Auth) GetStreamLeaseVersion() uint32 {
 }
 
 type Provide struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Keys          []*ProvideKey          `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Keys  []*ProvideKey          `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	// Whether the sender serves the per-peer post-quantum encryption sessions
+	// that a client requiring post-quantum encryption opens: encryption is on,
+	// the identity-signed certificate is set up, and the receiver TLS config
+	// offers the X25519MLKEM768 hybrid. The platform records the declaration
+	// with the provide. A provide without it, which includes every provide
+	// sent before this field existed, counts as not capable.
+	PostQuantumEncryption bool `protobuf:"varint,2,opt,name=post_quantum_encryption,json=postQuantumEncryption,proto3" json:"post_quantum_encryption,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *Provide) Reset() {
@@ -1015,6 +1022,13 @@ func (x *Provide) GetKeys() []*ProvideKey {
 		return x.Keys
 	}
 	return nil
+}
+
+func (x *Provide) GetPostQuantumEncryption() bool {
+	if x != nil {
+		return x.PostQuantumEncryption
+	}
+	return false
 }
 
 type ProvideKey struct {
@@ -2573,9 +2587,10 @@ const file_transfer_proto_rawDesc = "" +
 	"\x0eprovide_intent\x18\a \x01(\bR\rprovideIntent\x12\x1f\n" +
 	"\vclient_info\x18\b \x01(\tR\n" +
 	"clientInfo\x120\n" +
-	"\x14stream_lease_version\x18\t \x01(\rR\x12streamLeaseVersion\"4\n" +
+	"\x14stream_lease_version\x18\t \x01(\rR\x12streamLeaseVersion\"l\n" +
 	"\aProvide\x12)\n" +
-	"\x04keys\x18\x01 \x03(\v2\x15.bringyour.ProvideKeyR\x04keys\"f\n" +
+	"\x04keys\x18\x01 \x03(\v2\x15.bringyour.ProvideKeyR\x04keys\x126\n" +
+	"\x17post_quantum_encryption\x18\x02 \x01(\bR\x15postQuantumEncryption\"f\n" +
 	"\n" +
 	"ProvideKey\x12*\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x16.bringyour.ProvideModeR\x04mode\x12,\n" +
