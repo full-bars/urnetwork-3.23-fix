@@ -172,7 +172,9 @@ func (self *p2pSourceMismatch) record(outcome int) {
 // the receive path or the encryption policy.
 func (self *p2pSourceMismatch) decoded() { self.record(p2pSourceOutcomeDecoded) }
 
-// rejected means the frame failed to decode or to decrypt.
+// rejected means the frame failed to decode or to decrypt, was discarded by the
+// receive buffer (such as an older sequence), or was thrown away by the
+// encryption policy.
 func (self *p2pSourceMismatch) rejected() { self.record(p2pSourceOutcomeRejected) }
 
 // dropped means the frame was not decoded here: binding drop mode, or a

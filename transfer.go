@@ -1725,7 +1725,7 @@ func (self *Client) run() {
 				}
 				messageByteCount := MessageByteCount(pack.Frames)
 				c := func() bool {
-					success, err := self.receiveBuffer.Pack(&ReceivePack{
+					owned, admitted, err := self.receiveBuffer.pack(&ReceivePack{
 						Source:              source,
 						SequenceId:          sequenceId,
 						Pack:                pack,
@@ -1736,10 +1736,10 @@ func (self *Client) run() {
 						EncryptionRole:      receiveRole,
 						EncryptionCompanion: receiveCompanion,
 					}, self.settings.BufferTimeout)
-					if !success {
+					if !owned {
 						MessagePoolReturn(transferFrameBytes)
 					}
-					return success && err == nil
+					return admitted && err == nil
 				}
 				var accepted bool
 				if self.log.V(2).Enabled() {
@@ -5247,6 +5247,15 @@ func NewReceiveBuffer(ctx context.Context,
 // pack's frame bytes are owned by the sequence (or already returned to the
 // pool for a superseded pack); on failure the caller retains ownership.
 func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration) (bool, error) {
+	owned, _, err := self.pack(receivePack, timeout)
+	return owned, err
+}
+
+// pack reports buffer ownership separately from sequence admission. A pack
+// discarded before handoff (such as an older sequence or head mismatch) has
+// already returned its frame bytes to the pool, so owned is true while
+// admitted is false.
+func (self *ReceiveBuffer) pack(receivePack *ReceivePack, timeout time.Duration) (owned bool, admitted bool, err error) {
 	receiveSequenceId := receiveSequenceId{
 		Source:              receivePack.Source,
 		SequenceId:          receivePack.SequenceId,
@@ -5355,24 +5364,23 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 
 	var receiveSequence *ReceiveSequence
 	var success bool
-	var err error
 	for i := 0; i < 2; i += 1 {
 		select {
 		case <-self.ctx.Done():
-			return false, errors.New("Done.")
+			return false, false, errors.New("Done.")
 		default:
 		}
 		receiveSequence = initReceiveSequence(receiveSequence)
 		if receiveSequence == nil {
-			// drop
-			return true, nil
+			// drop: initReceiveSequence already returned the frame bytes
+			return true, false, nil
 		}
 		if success, err = receiveSequence.Pack(receivePack, timeout); err == nil {
-			return success, nil
+			return success, success, nil
 		}
 		// sequence closed
 	}
-	return success, err
+	return success, false, err
 }
 
 func (self *ReceiveBuffer) ReceiveQueueSizeAndMessageTypes(source TransferPath, sequenceId Id) (int, ByteCount, []protocol.MessageType) {

@@ -1076,4 +1076,13 @@ func printStatusVerdict(p Provider, plain bool) {
 		line = "\x1b[1;" + code + "m" + line + "\x1b[0m"
 	}
 	fmt.Println("health: " + line)
+	// The one-screen summary carries a Linger row. The default view prints the
+	// same fact as a warning line, because it is the view most people run.
+	if statusLingerApplicable(p) {
+		for _, row := range d.Rows {
+			if row.Name == "Linger" {
+				fmt.Println(lingerOffWarning(p.User))
+			}
+		}
+	}
 }

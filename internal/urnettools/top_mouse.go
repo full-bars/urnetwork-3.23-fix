@@ -107,6 +107,8 @@ func (m *topModel) mouseClick(name string, ev tcellui.Event) topEffect {
 		return topNone
 	}
 	switch name {
+	case lingerBannerHit, "footer:linger":
+		m.openLingerDialog()
 	case "footer:pages":
 		m.stepPage(1)
 	case "footer:tabs":

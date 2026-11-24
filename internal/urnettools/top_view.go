@@ -73,6 +73,9 @@ func (m *topModel) render(b *tui.Buffer) {
 		if m.about {
 			m.drawAbout(b)
 		}
+		if m.lingerFix.dialog {
+			m.drawLingerDialog(b)
+		}
 		m.drawNotice(b)
 		return
 	}
@@ -89,6 +92,9 @@ func (m *topModel) render(b *tui.Buffer) {
 		}
 		if m.about {
 			m.drawAbout(b)
+		}
+		if m.lingerFix.dialog {
+			m.drawLingerDialog(b)
 		}
 		m.drawNotice(b)
 		return
@@ -108,6 +114,9 @@ func (m *topModel) render(b *tui.Buffer) {
 	}
 	if m.about {
 		m.drawAbout(b)
+	}
+	if m.lingerFix.dialog {
+		m.drawLingerDialog(b)
 	}
 	m.drawNotice(b)
 }
@@ -133,11 +142,27 @@ func topFrameRowsOnePage(r tui.Rect) (header, content, footer tui.Rect) {
 // switching to one. p hides the row for the session and gives it back to the
 // content.
 func (m *topModel) drawFrame(b *tui.Buffer) {
-	header, strip, content, footer := topFrameRows(b.Rect())
+	banner := m.lingerBannerActive()
+	var header, strip, content, footer tui.Rect
+	if banner {
+		// The banner takes its own row between the header and the page strip,
+		// and only while lingering is off: with it off the frame is exactly
+		// the layout it was before.
+		rows := tui.SplitRows(b.Rect(), tui.Fixed(1), tui.Fixed(1), tui.Fixed(topPageStripRows), tui.Flex(1), tui.Fixed(1))
+		header, strip, content, footer = rows[0], rows[2], rows[3], rows[4]
+		m.drawLingerBanner(b.Sub(rows[1]), rows[1])
+	} else {
+		header, strip, content, footer = topFrameRows(b.Rect())
+	}
 	pages, current := m.pageStrip(content)
 	showStrip := m.stripShown(b.Rect(), len(pages))
 	if !showStrip {
-		header, content, footer = topFrameRowsOnePage(b.Rect())
+		if banner {
+			rows := tui.SplitRows(b.Rect(), tui.Fixed(1), tui.Fixed(1), tui.Flex(1), tui.Fixed(1))
+			header, content, footer = rows[0], rows[2], rows[3]
+		} else {
+			header, content, footer = topFrameRowsOnePage(b.Rect())
+		}
 	}
 	m.drawHeader(b.Sub(header))
 	if showStrip {
@@ -1248,6 +1273,14 @@ func topBytesPair(used, limit float64) string {
 
 // drawCompact is the single-panel view for terminals below topMin.
 func (m *topModel) drawCompact(b *tui.Buffer) {
+	// The banner keeps its row at the top even here: a terminal too small for
+	// the full layout is exactly where the provider stopping at logout is
+	// easiest to miss.
+	if m.lingerBannerActive() && b.Height() > 2 {
+		rows := tui.SplitRows(b.Rect(), tui.Fixed(1), tui.Flex(1))
+		m.drawLingerBanner(b.Sub(rows[0]), rows[0])
+		b = b.Sub(rows[1])
+	}
 	th := m.theme
 	in := tui.DrawBox(b, "urnet-tools top", th.Frame, th.Border, th.Accent, th.ASCII)
 	if in.Height() == 0 {
@@ -1296,6 +1329,7 @@ var helpLines = []string{
 	"t                cycle graph history: 10m, 1h, 24h",
 	"o                show all providers",
 	"a / i / v        alerts / resource gauges / carriers",
+	"L                enable lingering for the provider's user",
 	"g                list where goroutines are parked",
 	"billed, moved    billable and total bytes this session",
 	"A                about: logo, version and build",

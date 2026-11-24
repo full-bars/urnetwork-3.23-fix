@@ -417,6 +417,7 @@ func cmdRestart(args []string, force, dryRun bool) error {
 		return err
 	}
 	fmt.Printf("restarted %s\n", providerLabel(p))
+	warnLifecycleLinger(p)
 	return nil
 }
 
