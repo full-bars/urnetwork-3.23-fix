@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- **Top mirrored charts and Proxies heatmap fill their panels.** The Remote, Billable and Total charts now divide the available panel height equally between both halves (`(h-5)/2` rows each for frames of 9 rows or more) instead of capping height to a fixed width-to-height ratio. Dense Proxies heatmaps now fill row-major across the full panel width so rows follow the proxy count and hover and click hit testing match the full grid.
 - **Systemd lingering.** The installer tries to enable lingering for the service user and reports its final state. Status, update and restart warn when it is off. Auto-start refuses to enable the user unit when it is off.
 
 ### Added
