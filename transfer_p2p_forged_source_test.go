@@ -8,7 +8,12 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
-func TestP2pSourceBindingCountsByDefault(t *testing.T) {
+// With no setting, a bound lane delivers its own peer, drops the platform and
+// self forgeries, and drops a third party by the binding rule before decode.
+func TestP2pSourceBindingDropsByDefault(t *testing.T) {
+	if P2PSourceBindingDefault != "drop" || P2PSourceBinding() != P2PSourceBindingDefault {
+		t.Fatalf("default p2p source binding = %q (constant %q), want drop", P2PSourceBinding(), P2PSourceBindingDefault)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	settings := DefaultClientSettings()
 	settings.ControlPingTimeout = 0
@@ -34,23 +39,27 @@ func TestP2pSourceBindingCountsByDefault(t *testing.T) {
 		route <- forgeBarrierFrame(t, id, client.ClientId(), "forged")
 	}
 	route <- forgeBarrierFrame(t, peer, client.ClientId(), "peer")
-	seen := map[string]bool{}
-	for len(seen) < 2 {
-		select {
-		case got := <-delivered:
-			seen[got] = true
-		case <-time.After(10 * time.Second):
-			t.Fatalf("frames delivered: %v", seen)
+	// The receive loop handles one lane in order, so the peer frame is
+	// delivered only after the three before it were decided.
+	select {
+	case got := <-delivered:
+		if got != "peer" {
+			t.Fatalf("delivered %q, want the peer frame only", got)
 		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("peer frame not delivered")
 	}
-	if !seen["forged"] || !seen["peer"] {
-		t.Fatalf("unexpected deliveries: %v", seen)
+	select {
+	case got := <-delivered:
+		t.Fatalf("unexpected delivery %q", got)
+	default:
 	}
-	if got := client.ReceiveStats().SourceMismatchCount; got != 1 {
-		t.Fatalf("mismatches = %d, want 1", got)
+	stats := client.ReceiveStats()
+	if stats.SourceMismatchCount != 1 || stats.SourceMismatchDroppedCount != 1 || stats.SourceMismatchDecodedCount != 0 {
+		t.Fatalf("mismatch stats = %+v, want one dropped", stats)
 	}
-	if got := client.ReceiveStats().ForgedSourceDropCount; got != 2 {
-		t.Fatalf("drops = %d, want 2", got)
+	if stats.ForgedSourceDropCount != 2 {
+		t.Fatalf("forged drops = %d, want 2", stats.ForgedSourceDropCount)
 	}
 }
 

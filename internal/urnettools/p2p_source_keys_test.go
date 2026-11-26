@@ -10,7 +10,7 @@ import (
 
 // The two P2P source controls are kill switches. `off` must reach the provider
 // as a value: a clear removes the key and hands it back to liveDefaults, where
-// p2p_forged_source_drop is "on" and p2p_source_binding is "count", so the
+// p2p_forged_source_drop is "on" and p2p_source_binding is "drop", so the
 // operator's off would turn the feature back on.
 func TestP2PSourceKeysKeepOffAsAValue(t *testing.T) {
 	for _, key := range []string{"p2p_source_binding", "p2p_forged_source_drop"} {

@@ -6,8 +6,9 @@ import (
 	"sync/atomic"
 )
 
-// Bound lane source policy modes, in the order a setting may select them.
-// The first is the default. The values index the mismatch counters.
+// Bound lane source policy modes. The values index the mismatch counters and
+// the metric labels, so their order is fixed. Drop is the default, set in init,
+// so the zero value of the setting is not the default.
 const (
 	p2pSourceModeCount = iota
 	p2pSourceModeOff
@@ -26,6 +27,16 @@ const (
 var p2pSourceBinding atomic.Uint32
 var p2pForgedSourceDropDisabled atomic.Bool
 
+// P2PSourceBindingDefault is the mode a process starts in. Drop matches
+// upstream: production streams are direct, so the bound peer is the stream's
+// other end. A multihop stream ending here over a P2P leg is dropped until the
+// platform authenticates the stream origin to the endpoint.
+const P2PSourceBindingDefault = "drop"
+
+func init() {
+	p2pSourceBinding.Store(p2pSourceModeDrop)
+}
+
 func SetP2PSourceBinding(value string) error {
 	switch strings.ToLower(value) {
 	case "count":
@@ -42,12 +53,12 @@ func SetP2PSourceBinding(value string) error {
 
 func P2PSourceBinding() string {
 	switch p2pSourceBinding.Load() {
+	case p2pSourceModeCount:
+		return "count"
 	case p2pSourceModeOff:
 		return "off"
-	case p2pSourceModeDrop:
-		return "drop"
 	default:
-		return "count"
+		return "drop"
 	}
 }
 
