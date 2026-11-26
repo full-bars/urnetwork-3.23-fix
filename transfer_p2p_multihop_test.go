@@ -134,9 +134,15 @@ func runMultihopStream(t *testing.T, count int) (delivered int, acked int, a *mu
 // its own id as the source (SendSequence pack path), so A's packs name A and
 // C's acks name C. The transit hop forwards on its own route managers and
 // never reaches Client.run. Drop mode therefore discards the stream at both
-// endpoints. This test records that behavior: it is the reason the default
-// stays count. If it starts failing, drop mode no longer breaks multihop and
-// the default can be revisited.
+// endpoints.
+//
+// This is the documented known limit of the drop default. Production builds
+// only direct streams (the server returns no intermediaries), so no live
+// stream takes this shape. Multihop over P2P needs the platform to
+// authenticate the stream origin to the endpoint (upstream connect
+// `5c2d13cad`) before it can run under drop. Until then an operator who needs
+// it sets `p2p-source-binding count` or `off`. If this test starts failing,
+// drop no longer breaks multihop and the docs must change with it.
 func TestP2PMultihopStreamBrokenInDropMode(t *testing.T) {
 	setSourcePolicy(t, "drop", true)
 	const count = 8
