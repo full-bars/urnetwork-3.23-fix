@@ -10,10 +10,11 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
-// multihopTestEndpoint is one end of a two-hop stream. Its receive lane is a
-// real P2P receive transport over an in-memory connection, published bound to
-// the adjacent hop the way P2pTransport.run publishes an endpoint lane. Its
-// outgoing frames are captured on `out` for the relay to carry.
+// multihopTestEndpoint is one end of a P2P stream. Its receive lane is a real
+// P2P receive transport over an in-memory connection, published bound to the
+// adjacent hop the way P2pTransport.run publishes an endpoint lane. Its
+// outgoing frames are captured on `out` for the relay, or the direct link, to
+// carry.
 type multihopTestEndpoint struct {
 	client    *Client
 	out       Route
@@ -22,10 +23,17 @@ type multihopTestEndpoint struct {
 
 func newMultihopTestEndpoint(t *testing.T, ctx context.Context, relayId Id, streamId Id) (*multihopTestEndpoint, net.Conn) {
 	t.Helper()
+	return newP2PTestEndpoint(t, ctx, NewId(), relayId, streamId)
+}
+
+// newP2PTestEndpoint builds an endpoint with a chosen client id whose receive
+// lane is bound to `boundId`.
+func newP2PTestEndpoint(t *testing.T, ctx context.Context, clientId Id, boundId Id, streamId Id) (*multihopTestEndpoint, net.Conn) {
+	t.Helper()
 	settings := DefaultClientSettings()
 	settings.ControlPingTimeout = 0
 	settings.EncryptionSettings.Mode = EncryptionModeOff
-	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
+	client := NewClient(ctx, clientId, NewNoContractClientOob(), settings)
 	t.Cleanup(client.Close)
 
 	out := make(Route, 64)
@@ -39,7 +47,7 @@ func newMultihopTestEndpoint(t *testing.T, ctx context.Context, relayId Id, stre
 	client.RouteManager().UpdateTransportWithProperties(
 		receiveTransport,
 		[]Route{receiveRoute},
-		TransferCarrierProperties{boundSourceId: relayId},
+		TransferCarrierProperties{boundSourceId: boundId},
 	)
 
 	return &multihopTestEndpoint{
