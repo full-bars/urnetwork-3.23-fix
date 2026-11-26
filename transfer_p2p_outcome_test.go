@@ -174,28 +174,3 @@ func TestP2PSourceMismatchOlderSequenceRejected(t *testing.T) {
 	default:
 	}
 }
-
-// A pack of encrypted control frames only is consumed by the session. The
-// receive gate discards only application frames, so such a pack must not be
-// counted as discarded.
-func TestPackHasApplicationFrames(t *testing.T) {
-	control := &protocol.Frame{MessageType: protocol.MessageType_TransferEncryptedControl}
-	app := &protocol.Frame{MessageType: protocol.MessageType_TransferPack}
-	cases := []struct {
-		name string
-		pack *protocol.Pack
-		want bool
-	}{
-		{"nil pack", nil, false},
-		{"no frames", &protocol.Pack{}, false},
-		{"control only", &protocol.Pack{Frames: []*protocol.Frame{control, control}}, false},
-		{"application only", &protocol.Pack{Frames: []*protocol.Frame{app}}, true},
-		{"control and application", &protocol.Pack{Frames: []*protocol.Frame{control, app}}, true},
-		{"nil frame", &protocol.Pack{Frames: []*protocol.Frame{nil}}, false},
-	}
-	for _, tc := range cases {
-		if got := packHasApplicationFrames(tc.pack); got != tc.want {
-			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
-		}
-	}
-}

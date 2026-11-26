@@ -147,34 +147,37 @@ func (self *Client) recordSourceMismatch(mode uint32, outcome int) {
 }
 
 // p2pSourceMismatch records the outcome of one frame whose source did not
-// match the peer its lane is bound to. Only the first outcome counts, so a
-// frame that is decoded after an earlier drop cannot be counted twice. The
-// zero value records nothing, which keeps an accepted frame allocation free
-// and silent.
+// match the peer its lane is bound to. The record travels with the frame: the
+// receive loop holds it until the frame is handed to a receive sequence, and
+// the sequence decides it where the frame is delivered or discarded. Only the
+// first outcome counts, so a frame cannot be counted twice. A nil record
+// belongs to a frame with no mismatch and records nothing, which keeps an
+// accepted frame allocation free and silent.
 type p2pSourceMismatch struct {
 	client *Client
 	mode   uint32
-	active bool
+	active atomic.Bool
 }
 
-func newP2PSourceMismatch(client *Client, mode uint32, active bool) p2pSourceMismatch {
-	return p2pSourceMismatch{client: client, mode: mode, active: active}
+func newP2PSourceMismatch(client *Client, mode uint32) *p2pSourceMismatch {
+	mismatch := &p2pSourceMismatch{client: client, mode: mode}
+	mismatch.active.Store(true)
+	return mismatch
 }
 
 func (self *p2pSourceMismatch) record(outcome int) {
-	if self.active {
-		self.active = false
+	if self != nil && self.active.CompareAndSwap(true, false) {
 		self.client.recordSourceMismatch(self.mode, outcome)
 	}
 }
 
-// decoded means the frame was accepted: it parsed, and it was not discarded by
-// the receive path or the encryption policy.
+// decoded means the frame was accepted: it passed the contract check and its
+// frames were delivered, or consumed by the encryption session.
 func (self *p2pSourceMismatch) decoded() { self.record(p2pSourceOutcomeDecoded) }
 
 // rejected means the frame failed to decode or to decrypt, was discarded by the
-// receive buffer (such as an older sequence), or was thrown away by the
-// encryption policy.
+// receive buffer or sequence (such as an older sequence, a resend, or no
+// contract), or was thrown away by the encryption policy.
 func (self *p2pSourceMismatch) rejected() { self.record(p2pSourceOutcomeRejected) }
 
 // dropped means the frame was not decoded here: binding drop mode, or a
