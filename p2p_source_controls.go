@@ -15,9 +15,8 @@ const (
 )
 
 // What happened to a frame whose source did not match its lane's bound peer.
-// A transit hop forwards the bytes without decoding them and is not a policy
-// point, so it reports no outcome: what it does is not evidence about the
-// traffic it carries.
+// A transit hop relays a stream on its own route managers, so its traffic
+// never reaches this check and reports no outcome.
 const (
 	p2pSourceOutcomeDecoded = iota
 	p2pSourceOutcomeRejected

@@ -1415,9 +1415,11 @@ func (self *Client) run() {
 			continue
 		}
 		// The measured half: a frame on a lane bound to one peer naming
-		// another source. It is delivered and counted by default, because a
-		// multihop stream reaches a transit hop with the original source still
-		// in the frame and only the final destination can decrypt it.
+		// another source. It is delivered and counted by default, because the
+		// platform tells a multihop stream's endpoint only its adjacent hop,
+		// so the endpoint lane is bound to that hop while every frame names
+		// the stream's origin. A transit hop relays the stream on its own
+		// route managers and never reaches this check.
 		var mismatch *p2pSourceMismatch
 		if boundSourceMismatch(disposition, path.SourceId) {
 			if mode := p2pSourceBindingMode(); mode == p2pSourceModeDrop {
