@@ -131,6 +131,23 @@ func TestTopFamilyPageJoinsTheStrip(t *testing.T) {
 	}
 }
 
+// Both pages remain available when the provider reports transports and families.
+func TestTopFamilyPageAlongsideTransports(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
+	m.apply(0, familyFixture(t), nil)
+	prev, _ := mixedWindow()
+	m.transportsHistory.push(transportTestBase, prev)
+	idx, _ := m.pageStrip(m.pageArea())
+	if len(idx) != 6 || topPages[idx[4]].id != "transports" || topPages[idx[5]].id != familyPageID {
+		t.Fatalf("unexpected pages: %v", idx)
+	}
+	m.selectPageID(familyPageID)
+	if m.selectedPage().id != familyPageID {
+		t.Fatal("family page cannot be selected")
+	}
+}
+
 // The share is whole percents that always sum to 100, IPv6 taking the
 // remainder. An idle window has no share to state and says so.
 func TestTopFamilyShare(t *testing.T) {

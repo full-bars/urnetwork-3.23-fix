@@ -519,6 +519,10 @@ func (c remoteChart) drawPeak(b *tui.Buffer, dir []remoteSeries, up bool, row in
 	figures := make([]string, 0, len(dir))
 	at := 0.0
 	for _, s := range dir {
+		// Packet rates have a separate scale and are not byte-rate peaks.
+		if s.Packets {
+			continue
+		}
 		pts := remotePointsOf(c, s.Values, 2*b.Width())
 		if len(pts) == 0 {
 			continue
