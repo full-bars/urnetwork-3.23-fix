@@ -49,12 +49,26 @@ func runForgedPlaintextPacks(t *testing.T, mode string, count int, contracted bo
 		route <- forgeBarrierFrame(t, forgedId, client.ClientId(), "forged")
 	}
 	route <- forgeBarrierFrame(t, peer, client.ClientId(), "barrier")
-	for barrier := false; !barrier; {
+	wantForged := 0
+	if mode == "count" && contracted {
+		wantForged = count
+	}
+	barrier, forgedDelivered := false, 0
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	for !barrier || forgedDelivered < wantForged {
 		select {
 		case got := <-delivered:
-			barrier = got == "barrier"
-		case <-time.After(30 * time.Second):
-			t.Fatal("barrier not delivered")
+			switch got {
+			case "barrier":
+				barrier = true
+			case "forged":
+				forgedDelivered++
+			default:
+				t.Fatalf("unexpected delivery %q", got)
+			}
+		case <-timer.C:
+			t.Fatalf("timed out: barrier=%v, forged deliveries=%d/%d", barrier, forgedDelivered, wantForged)
 		}
 	}
 
