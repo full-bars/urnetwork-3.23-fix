@@ -267,8 +267,8 @@ The outcome values have one meaning each:
 
 | Outcome | Meaning |
 |---|---|
-| `decoded` | The frame was accepted: it parsed, and the receive path did not discard it. This is what a legitimate multihop frame looks like at its destination |
-| `rejected` | The frame could not be used. It failed to parse or decrypt, the receive buffer discarded it (such as an older sequence), or this client requires encryption for that source and threw the plaintext frame away |
+| `decoded` | The frame was accepted: it passed the contract check, and its frames were delivered or taken by the encryption session. This is what a legitimate multihop frame looks like at its destination |
+| `rejected` | The frame could not be used. It failed to parse or decrypt, the receive buffer or sequence discarded it (such as an older sequence, a resend, or a sender with no contract), or this client requires encryption for that source and threw the plaintext frame away |
 | `dropped` | A policy discarded the frame: `p2p-source-binding drop`, or a routing guard that could not place it |
 
 Only `mode="count"` produces `decoded` and `rejected`. `drop` mode resolves every mismatch before decode, so it reports `dropped` alone. There is no `forwarded` outcome: a transit hop forwards the bytes without decoding them, and it is not a policy point.
