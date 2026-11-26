@@ -6727,6 +6727,7 @@ func (self *ReceiveSequence) Close() {
 				if !ok {
 					return
 				}
+				receivePack.sourceMismatch.rejected()
 				MessagePoolReturn(receivePack.TransferFrameBytes)
 			default:
 				return

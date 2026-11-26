@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"context"
 	"testing"
 
 	"github.com/urnetwork/connect/protocol"
@@ -28,6 +29,26 @@ func forgePackFrame(t *testing.T, sourceId Id, destinationId Id, sequenceId Id, 
 			},
 		},
 	})
+}
+
+// Close rejects unread mismatch packs without changing an earlier outcome.
+func TestP2PSourceMismatchHandoffDrainRejected(t *testing.T) {
+	client := &Client{}
+	_, cancel := context.WithCancel(context.Background())
+	seq := &ReceiveSequence{cancel: cancel, packs: make(chan *ReceivePack, 3)}
+	unread := newP2PSourceMismatch(client, p2pSourceModeCount)
+	decided := newP2PSourceMismatch(client, p2pSourceModeCount)
+	decided.decoded()
+	seq.packs <- &ReceivePack{sourceMismatch: unread}
+	seq.packs <- &ReceivePack{sourceMismatch: decided}
+	seq.packs <- &ReceivePack{}
+	seq.Close()
+	if got := client.p2pSources.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeRejected); got != 1 {
+		t.Fatalf("drained mismatch rejected = %d, want 1", got)
+	}
+	if got := client.p2pSources.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeDecoded); got != 1 {
+		t.Fatalf("previously decoded = %d, want 1", got)
+	}
 }
 
 // A forged sender with no contract gets its pack admitted to the receive
