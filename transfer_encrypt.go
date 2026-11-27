@@ -2823,6 +2823,13 @@ func (self *EncryptionSessionManager) ServesPostQuantumEncryption() bool {
 	if self.serverTlsConfig.GetCertificate != nil {
 		return false
 	}
+	// A static list of several chains is in the same position: crypto/tls
+	// selects one per handshake by SNI, and the contract publishes only the
+	// first, so a peer that names another chain is served an unpublished
+	// identity.
+	if 1 < len(self.serverTlsConfig.Certificates) {
+		return false
+	}
 	// an empty list is the crypto/tls default, which this build resolves per
 	// handshake and which GODEBUG=tlsmlkem=0 shortens; an explicit list is
 	// taken as given either way
