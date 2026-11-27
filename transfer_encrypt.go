@@ -2818,6 +2818,11 @@ func (self *EncryptionSessionManager) ServesPostQuantumEncryption() bool {
 	if self.serverTlsConfig.GetConfigForClient != nil {
 		return false
 	}
+	// A certificate callback can present an identity other than the first
+	// static chain published in the contract, which the peer would reject.
+	if self.serverTlsConfig.GetCertificate != nil {
+		return false
+	}
 	// an empty list is the crypto/tls default, which this build resolves per
 	// handshake and which GODEBUG=tlsmlkem=0 shortens; an explicit list is
 	// taken as given either way
