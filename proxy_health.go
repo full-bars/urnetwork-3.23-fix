@@ -19,6 +19,7 @@ import (
 // that silently zeroed LatencyNs/SocksLatencyNs on every copy.
 func proxyBandwidthSnapshot(bw *ProxyBandwidth) *ProxyBandwidth {
 	out := &ProxyBandwidth{}
+	bw.trafficMu.Lock()
 	out.TotalRx.Store(bw.TotalRx.Load())
 	out.TotalTx.Store(bw.TotalTx.Load())
 	out.BillableRx.Store(bw.BillableRx.Load())
@@ -29,6 +30,7 @@ func proxyBandwidthSnapshot(bw *ProxyBandwidth) *ProxyBandwidth {
 	out.TotalTxV6.Store(bw.TotalTxV6.Load())
 	out.BillableRxV6.Store(bw.BillableRxV6.Load())
 	out.BillableTxV6.Store(bw.BillableTxV6.Load())
+	bw.trafficMu.Unlock()
 	out.Clients.Store(bw.Clients.Load())
 	out.LatencyNs.Store(bw.LatencyNs.Load())
 	out.SocksLatencyNs.Store(bw.SocksLatencyNs.Load())
@@ -63,6 +65,8 @@ type ProxyBandwidth struct {
 	// mu: it is only read and written while the registry lock is held.
 	seeded bool
 
+	trafficMu sync.Mutex
+
 	// retiredV6 is the largest IPv6 total already folded into the aggregate
 	// retired counter for this record. Guarded by proxyHealthMu with seeded.
 	retiredV6 ProxyBandwidthFamily
@@ -71,6 +75,23 @@ type ProxyBandwidth struct {
 	sessions      map[any]time.Time
 	presenceSince time.Time // when clients first arrived in the current continuous window
 	lastActivity  time.Time // when the last session was added or removed
+}
+
+// WithTrafficUpdate groups related traffic counter changes into one update.
+// The callback must not invoke a proxy snapshot or another traffic update.
+func (self *ProxyBandwidth) WithTrafficUpdate(update func()) {
+	self.trafficMu.Lock()
+	defer self.trafficMu.Unlock()
+	update()
+}
+
+func (self *ProxyBandwidth) addTraffic(base, v6 *atomic.Uint64, count uint64, isV6 bool) {
+	self.WithTrafficUpdate(func() {
+		base.Add(count)
+		if isV6 {
+			v6.Add(count)
+		}
+	})
 }
 
 // clientPresenceGrace is how long after all sessions close before resetting

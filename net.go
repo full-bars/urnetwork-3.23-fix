@@ -1169,10 +1169,7 @@ func (self *trackedConn) Read(b []byte) (n int, err error) {
 		recordSocketBytes(self.socketPhase(), false, n)
 	}
 	if n > 0 && self.bw != nil {
-		self.bw.TotalRx.Add(uint64(n))
-		if self.v6 {
-			self.bw.TotalRxV6.Add(uint64(n))
-		}
+		self.bw.addTraffic(&self.bw.TotalRx, &self.bw.TotalRxV6, uint64(n), self.v6)
 	}
 	if n > 0 && self.attempt != nil {
 		self.attempt.rx.Add(int64(n))
@@ -1189,10 +1186,7 @@ func (self *trackedConn) Write(b []byte) (n int, err error) {
 		recordSocketBytes(self.socketPhase(), true, n)
 	}
 	if n > 0 && self.bw != nil {
-		self.bw.TotalTx.Add(uint64(n))
-		if self.v6 {
-			self.bw.TotalTxV6.Add(uint64(n))
-		}
+		self.bw.addTraffic(&self.bw.TotalTx, &self.bw.TotalTxV6, uint64(n), self.v6)
 	}
 	if n > 0 && self.attempt != nil {
 		self.attempt.tx.Add(int64(n))

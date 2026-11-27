@@ -328,6 +328,55 @@ func TestSnapshotPacketRates(t *testing.T) {
 	}
 }
 
+func TestFamilySplit(t *testing.T) {
+	const index = 992711
+	connect.RegisterProxy(index, "family-test", "family-test")
+	bw := connect.RegisterProxyBandwidth(index)
+	t.Cleanup(func() { connect.UnregisterProxy(index) })
+
+	s := newDirectionSampler()
+	_, _, initial := readProxyBandwidth()
+	s.sample(initial, snapT0)
+
+	partial := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		bw.WithTrafficUpdate(func() {
+			bw.TotalRx.Add(100)
+			close(partial)
+			<-release
+			bw.TotalRxV6.Add(100)
+		})
+	}()
+	<-partial
+
+	started := make(chan struct{})
+	result := make(chan map[string]directionLanes, 1)
+	go func() {
+		close(started)
+		_, _, directions := readProxyBandwidth()
+		result <- directions
+	}()
+	<-started
+	var observed map[string]directionLanes
+	select {
+	case observed = <-result:
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	<-finished
+	if observed == nil {
+		observed = <-result
+	}
+	s.sample(observed, snapT0.Add(time.Second))
+	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
+	if len(got) != 1 || got[0] != 0 {
+		t.Fatalf("pure IPv6 write produced IPv4 history %v, want [0]", got)
+	}
+}
+
 func TestFamilySplitReconcilesSameProxyCatchUp(t *testing.T) {
 	s := newDirectionSampler()
 	s.sample(map[string]directionLanes{"p": {}}, snapT0)

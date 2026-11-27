@@ -3635,11 +3635,8 @@ func (self *RemoteUserNatProvider) countBillableRx(ipPath *IpPath, packet []byte
 	if ipPath != nil {
 		v6 = ipPath.Version == 6
 	}
-	self.bw.BillableRx.Add(byteCount)
+	self.bw.addTraffic(&self.bw.BillableRx, &self.bw.BillableRxV6, byteCount, v6)
 	self.bw.BillableRxPackets.Add(1)
-	if v6 {
-		self.bw.BillableRxV6.Add(byteCount)
-	}
 }
 
 // countBillableTx credits one billable packet sent toward the client. The
@@ -3651,11 +3648,8 @@ func (self *RemoteUserNatProvider) countBillableTx(packet []byte) {
 		return
 	}
 	byteCount := uint64(len(packet))
-	self.bw.BillableTx.Add(byteCount)
+	self.bw.addTraffic(&self.bw.BillableTx, &self.bw.BillableTxV6, byteCount, ipv6Packet(packet))
 	self.bw.BillableTxPackets.Add(1)
-	if ipv6Packet(packet) {
-		self.bw.BillableTxV6.Add(byteCount)
-	}
 }
 
 // `ReceivePacketFunction`

@@ -360,11 +360,8 @@ func (self *udpSocketReadPollShard) readDatagrams(fd int, sequence *UdpSequence)
 			// the socket is read with a raw syscall, so the bandwidth wrapper
 			// cannot credit the receive direction itself
 			if sequence.bw != nil {
-				sequence.bw.TotalRx.Add(uint64(n))
 				// a flow's socket has one family for its whole life
-				if sequence.ipVersion == 6 {
-					sequence.bw.TotalRxV6.Add(uint64(n))
-				}
+				sequence.bw.addTraffic(&sequence.bw.TotalRx, &sequence.bw.TotalRxV6, uint64(n), sequence.ipVersion == 6)
 			}
 			packets, packetsErr := sequence.DataPackets(self.readBuffer, n, settings.Mtu)
 			if packetsErr != nil {

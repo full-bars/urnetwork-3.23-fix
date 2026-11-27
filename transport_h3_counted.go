@@ -33,19 +33,13 @@ func newCountedUDPConn(conn *net.UDPConn, bw *ProxyBandwidth, v6 bool) *countedU
 
 func (self *countedUDPConn) addRx(n int) {
 	if 0 < n {
-		self.bw.TotalRx.Add(uint64(n))
-		if self.v6 {
-			self.bw.TotalRxV6.Add(uint64(n))
-		}
+		self.bw.addTraffic(&self.bw.TotalRx, &self.bw.TotalRxV6, uint64(n), self.v6)
 	}
 }
 
 func (self *countedUDPConn) addTx(n int) {
 	if 0 < n {
-		self.bw.TotalTx.Add(uint64(n))
-		if self.v6 {
-			self.bw.TotalTxV6.Add(uint64(n))
-		}
+		self.bw.addTraffic(&self.bw.TotalTx, &self.bw.TotalTxV6, uint64(n), self.v6)
 	}
 }
 
@@ -107,10 +101,7 @@ type countedPacketConn struct {
 func (self *countedPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	n, addr, err := self.PacketConn.ReadFrom(b)
 	if 0 < n {
-		self.bw.TotalRx.Add(uint64(n))
-		if addrIsV6(addr) {
-			self.bw.TotalRxV6.Add(uint64(n))
-		}
+		self.bw.addTraffic(&self.bw.TotalRx, &self.bw.TotalRxV6, uint64(n), addrIsV6(addr))
 	}
 	return n, addr, err
 }
@@ -118,10 +109,7 @@ func (self *countedPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 func (self *countedPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	n, err := self.PacketConn.WriteTo(b, addr)
 	if 0 < n {
-		self.bw.TotalTx.Add(uint64(n))
-		if addrIsV6(addr) {
-			self.bw.TotalTxV6.Add(uint64(n))
-		}
+		self.bw.addTraffic(&self.bw.TotalTx, &self.bw.TotalTxV6, uint64(n), addrIsV6(addr))
 	}
 	return n, err
 }
