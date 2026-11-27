@@ -96,7 +96,35 @@ func sumSeries(vals []float64) float64 {
 // familyShareText is the share bar's line: the two percentages, or "idle" with
 // zeroes for a window that carried nothing.
 func familyShareText(v4up, v6up, v4down, v6down []float64) string {
-	v4pct, v6pct, idle := familyShare(sumSeries(v4up)+sumSeries(v4down), sumSeries(v6up)+sumSeries(v6down))
+	return familyShareTextWindow(v4up, v6up, v4down, v6down, time.Time{}, time.Time{}, 0, 0)
+}
+
+// sumSeriesWindow adds the samples the chart still shows: those no older than
+// the window before now.
+func sumSeriesWindow(vals []float64, newest, now time.Time, interval, window time.Duration) float64 {
+	if window <= 0 || interval <= 0 || newest.IsZero() || now.IsZero() {
+		return sumSeries(vals)
+	}
+	start := now.Add(-window)
+	var sum float64
+	for i := len(vals) - 1; i >= 0; i-- {
+		at := newest.Add(-time.Duration(len(vals)-1-i) * interval)
+		if at.Before(start) {
+			break
+		}
+		if v := vals[i]; v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0) {
+			sum += v
+		}
+	}
+	return sum
+}
+
+// familyShareTextWindow states the split of the samples the chart actually
+// shows, rather than the entire history the provider has accumulated.
+func familyShareTextWindow(v4up, v6up, v4down, v6down []float64, newest, now time.Time, interval, window time.Duration) string {
+	v4pct, v6pct, idle := familyShare(
+		sumSeriesWindow(v4up, newest, now, interval, window)+sumSeriesWindow(v4down, newest, now, interval, window),
+		sumSeriesWindow(v6up, newest, now, interval, window)+sumSeriesWindow(v6down, newest, now, interval, window))
 	line := fmt.Sprintf("IPv4 %d%%  IPv6 %d%%", v4pct, v6pct)
 	if idle {
 		line += "  idle"
@@ -127,7 +155,7 @@ func (m *topModel) drawFamilyPage(b *tui.Buffer, content tui.Rect) {
 		box.Put(tui.Truncate("waiting for the first IP family samples", box.Width(), th.ASCII), 0, 0, th.Dim)
 		return
 	}
-	m.drawFamilyShare(box, v4Up, v6Up, v4Down, v6Down)
+	m.drawFamilyShare(box, v4Up, v6Up, v4Down, v6Down, newest, m.now(), interval, remoteDefaultWindow)
 	if box.Height() <= familyShareBar {
 		return
 	}
@@ -164,10 +192,12 @@ func (m *topModel) drawFamilyPage(b *tui.Buffer, content tui.Rect) {
 
 // drawFamilyShare paints the window share bar in the box's first row, each
 // figure in its series colour so it reads against the curves below.
-func (m *topModel) drawFamilyShare(box *tui.Buffer, v4up, v6up, v4down, v6down []float64) {
+func (m *topModel) drawFamilyShare(box *tui.Buffer, v4up, v6up, v4down, v6down []float64, newest, now time.Time, interval, window time.Duration) {
 	th := m.theme
 	v4Style, v6Style := familyPalette(th)
-	v4pct, v6pct, idle := familyShare(sumSeries(v4up)+sumSeries(v4down), sumSeries(v6up)+sumSeries(v6down))
+	v4pct, v6pct, idle := familyShare(
+		sumSeriesWindow(v4up, newest, now, interval, window)+sumSeriesWindow(v4down, newest, now, interval, window),
+		sumSeriesWindow(v6up, newest, now, interval, window)+sumSeriesWindow(v6down, newest, now, interval, window))
 	row := 0
 	x := box.Put(tui.Truncate("IPv4", box.Width(), th.ASCII), 0, row, v4Style)
 	x = box.Put(fmt.Sprintf(" %d%%", v4pct), x, row, v4Style)

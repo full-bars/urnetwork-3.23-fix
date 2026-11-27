@@ -3,6 +3,7 @@ package urnettools
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/urnetwork/connect/internal/tui"
 )
@@ -277,13 +278,34 @@ func TestTopFamilyPageAfterADecrease(t *testing.T) {
 	b := tui.New(120, 40)
 	renderFresh(m, b)
 	text := b.String()
-	// The share bar states the split of the series on screen, IPv6 smaller than
-	// the fixture's 22 percent now that half its download lane is flat.
+	// The share bar states the split of the window on screen, not the whole
+	// history: the fixture's 22 percent no longer describes the visible part
+	// once half the IPv6 download lane is flat.
 	f := s.Traffic.Directions.Families
-	want := familyShareText(f.BillableTx.V4.HistoryBps, f.BillableTx.V6.HistoryBps,
-		f.BillableRx.V4.HistoryBps, f.BillableRx.V6.HistoryBps)
+	_, _, _, _, newest, interval, _ := m.familyData()
+	want := familyShareTextWindow(f.BillableTx.V4.HistoryBps, f.BillableTx.V6.HistoryBps,
+		f.BillableRx.V4.HistoryBps, f.BillableRx.V6.HistoryBps, newest, m.now(), interval, remoteDefaultWindow)
 	if !strings.Contains(text, want) {
 		t.Fatalf("the share bar does not state %q:\n%s", want, text)
+	}
+}
+
+func TestFamilyShareUsesChartWindow(t *testing.T) {
+	// 600 one-second samples: IPv4 fills all but the newest minute, IPv6 fills
+	// the minute the chart shows. The whole-history share is 90/10; the share
+	// bar must state the visible 0/100.
+	v4 := make([]float64, 600)
+	for i := 0; i < 539; i++ {
+		v4[i] = 1
+	}
+	v6 := make([]float64, 600)
+	for i := 539; i < 600; i++ {
+		v6[i] = 1
+	}
+	now := topBase.Add(600 * time.Second)
+	got := familyShareTextWindow(v4, v6, nil, nil, now, now, time.Second, remoteDefaultWindow)
+	if got != "IPv4 0%  IPv6 100%" {
+		t.Fatalf("share bar = %q, want the visible window's 0/100", got)
 	}
 }
 
