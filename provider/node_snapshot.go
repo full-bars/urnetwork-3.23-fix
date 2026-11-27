@@ -612,6 +612,20 @@ func (s *directionSampler) sample(cur map[string]directionLanes, now time.Time) 
 		deltas[dirTotalRxV6] += v6TRx
 		deltas[dirTotalTxV6] += v6TTx
 		d := s.familyDebt[k]
+		// A respawned proxy reports counters starting over. Its old debt
+		// belongs to the previous record, not to the bytes that follow.
+		if v.billableRx < p.billableRx || v.billableRxV6 < p.billableRxV6 {
+			d.billableRx = 0
+		}
+		if v.billableTx < p.billableTx || v.billableTxV6 < p.billableTxV6 {
+			d.billableTx = 0
+		}
+		if v.totalRx < p.totalRx || v.totalRxV6 < p.totalRxV6 {
+			d.totalRx = 0
+		}
+		if v.totalTx < p.totalTx || v.totalTxV6 < p.totalTxV6 {
+			d.totalTx = 0
+		}
 		deltas[dirBillableRxV4] += pay(bRx, v6BRx, &d.billableRx)
 		deltas[dirBillableTxV4] += pay(bTx, v6BTx, &d.billableTx)
 		deltas[dirTotalRxV4] += pay(tRx, v6TRx, &d.totalRx)

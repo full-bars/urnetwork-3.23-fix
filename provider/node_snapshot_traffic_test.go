@@ -366,6 +366,20 @@ func TestFamilySplitDoesNotChargeDebtToAnotherProxy(t *testing.T) {
 	}
 }
 
+func TestFamilySplitClearsDebtAfterCounterReset(t *testing.T) {
+	s := newDirectionSampler()
+	s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 100}}, snapT0)
+	s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 200}}, snapT0.Add(time.Second))
+	// The proxy respawns with zeroed counters; its old debt must not follow.
+	s.sample(map[string]directionLanes{"p": {}}, snapT0.Add(2*time.Second))
+	s.sample(map[string]directionLanes{"p": {totalRx: 100}}, snapT0.Add(3*time.Second))
+
+	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
+	if len(got) != 3 || got[0] != 0 || got[1] != 0 || got[2] != 100 {
+		t.Fatalf("derived V4 history = %v, want [0 0 100]", got)
+	}
+}
+
 func TestFamilySplitKeepsReconciledSampleAfterRingRollover(t *testing.T) {
 	s := newDirectionSampler()
 	s.sample(map[string]directionLanes{"p": {}}, snapT0)
