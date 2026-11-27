@@ -102,16 +102,13 @@ func (self *PlatformTransport) countH3Socket(conn *net.UDPConn, v6 bool) net.Pac
 type countedPacketConn struct {
 	net.PacketConn
 	bw *ProxyBandwidth
-	// v6 is the family of the endpoint this wrapper counts, read once from its
-	// local address. Everything unparseable counts as IPv4.
-	v6 bool
 }
 
 func (self *countedPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	n, addr, err := self.PacketConn.ReadFrom(b)
 	if 0 < n {
 		self.bw.TotalRx.Add(uint64(n))
-		if self.v6 {
+		if addrIsV6(addr) {
 			self.bw.TotalRxV6.Add(uint64(n))
 		}
 	}
@@ -122,7 +119,7 @@ func (self *countedPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	n, err := self.PacketConn.WriteTo(b, addr)
 	if 0 < n {
 		self.bw.TotalTx.Add(uint64(n))
-		if self.v6 {
+		if addrIsV6(addr) {
 			self.bw.TotalTxV6.Add(uint64(n))
 		}
 	}
@@ -152,7 +149,7 @@ func (self *PlatformTransport) countInjectedH3Conn(conn net.PacketConn) net.Pack
 	}
 	if idx, ok := self.proxyIndex(); ok {
 		if bw := RegisteredProxyBandwidth(idx); bw != nil {
-			return &countedPacketConn{PacketConn: conn, bw: bw, v6: addrIsV6(conn.LocalAddr())}
+			return &countedPacketConn{PacketConn: conn, bw: bw}
 		}
 	}
 	return conn
