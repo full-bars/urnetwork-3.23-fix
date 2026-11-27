@@ -339,9 +339,29 @@ func TestFamilySplitCarriesNegativeRemainder(t *testing.T) {
 	s.rings[dirTotalRxV6][0] = 100
 	s.rings[dirTotalRx][1] = 100
 	s.rings[dirTotalRxV6][1] = 0
+	s.elapsed[0] = 1
+	s.elapsed[1] = 1
 
 	got := s.familySplit(dirTotalRx, dirTotalRxV6).V4.HistoryBps
 	if len(got) != 2 || got[0] != 0 || got[1] != 0 {
 		t.Fatalf("derived V4 history = %v, want [0 0]", got)
+	}
+}
+
+func TestFamilySplitCarriesBytesAcrossUnequalIntervals(t *testing.T) {
+	s := newDirectionSampler()
+	s.count = 3
+	s.next = 3
+	// A 100-byte IPv6 observation in a one-second tick, its base catch-up in
+	// a two-second tick, then 50 genuine IPv4 bytes in the next second.
+	s.rings[dirTotalRx] = [snapshotRingSize]int64{0, 50, 50}
+	s.rings[dirTotalRxV6] = [snapshotRingSize]int64{100, 0, 0}
+	s.elapsed[0] = 1
+	s.elapsed[1] = 2
+	s.elapsed[2] = 1
+
+	got := s.familySplit(dirTotalRx, dirTotalRxV6).V4.HistoryBps
+	if len(got) != 3 || got[0] != 0 || got[1] != 0 || got[2] != 50 {
+		t.Fatalf("derived V4 history = %v, want [0 0 50]", got)
 	}
 }
