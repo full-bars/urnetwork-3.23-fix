@@ -89,6 +89,19 @@ func TestProxyBandwidthFamilyCounterHoldsAcrossReRegistration(t *testing.T) {
 	wantFamily(t, ProxyBandwidthFamilyTotalsMonotonic(), both, "monotonic family totals after second unregister")
 }
 
+func TestProxyBandwidthFamilyCounterIgnoresRepeatedRetirement(t *testing.T) {
+	resetProxyHealthForTest()
+
+	bw := RegisterProxyBandwidth(12)
+	bw.BillableRxV6.Store(9)
+	bw.TotalRxV6.Store(9)
+	retireProxyV6Locked(bw)
+	once := ProxyBandwidthFamilyTotalsMonotonic()
+
+	retireProxyV6Locked(bw)
+	wantFamily(t, ProxyBandwidthFamilyTotalsMonotonic(), once, "monotonic family totals after repeated retirement")
+}
+
 // TestBillableRxTxIPv6Split proves the billable accounting paths credit the IPv6
 // counters only for IPv6 packets and never swap rx with tx.
 func TestBillableRxTxIPv6Split(t *testing.T) {

@@ -63,6 +63,10 @@ type ProxyBandwidth struct {
 	// mu: it is only read and written while the registry lock is held.
 	seeded bool
 
+	// retiredV6 is the largest IPv6 total already folded into the aggregate
+	// retired counter for this record. Guarded by proxyHealthMu with seeded.
+	retiredV6 ProxyBandwidthFamily
+
 	mu            sync.Mutex
 	sessions      map[any]time.Time
 	presenceSince time.Time // when clients first arrived in the current continuous window
@@ -229,10 +233,9 @@ var (
 	// identities and must not shadow each other here.
 	proxyHealthByKey = map[string]*proxyHealth{}
 
-	// Final IPv6 counters of bandwidth records that have left the pool. Keyed
-	// by record rather than identity so a re-registration with a fresh record
-	// adds its own contribution instead of replacing the retired one.
-	proxyRetiredV6ByRecord = map[*ProxyBandwidth]ProxyBandwidthFamily{}
+	// IPv6 bytes already retired from records that have left the pool. Only the
+	// metrics series uses this aggregate; the chart keeps reading live totals.
+	proxyRetiredV6 ProxyBandwidthFamily
 
 	proxyLifetimeRecovered int
 	proxyLifetimeLost      int
@@ -733,12 +736,29 @@ func retireProxyV6Locked(bw *ProxyBandwidth) {
 		TotalRx:    bw.TotalRxV6.Load(),
 		TotalTx:    bw.TotalTxV6.Load(),
 	}
-	seen := proxyRetiredV6ByRecord[bw]
-	seen.BillableRx = max(seen.BillableRx, live.BillableRx)
-	seen.BillableTx = max(seen.BillableTx, live.BillableTx)
-	seen.TotalRx = max(seen.TotalRx, live.TotalRx)
-	seen.TotalTx = max(seen.TotalTx, live.TotalTx)
-	proxyRetiredV6ByRecord[bw] = seen
+	// Only the increase over what this record already contributed goes into
+	// the aggregate, so a second retirement of the same bytes is a no-op.
+	seen := bw.retiredV6
+	plus := func(live, seen uint64) uint64 {
+		if seen < live {
+			return live - seen
+		}
+		return 0
+	}
+	inc := ProxyBandwidthFamily{
+		BillableRx: plus(live.BillableRx, seen.BillableRx),
+		BillableTx: plus(live.BillableTx, seen.BillableTx),
+		TotalRx:    plus(live.TotalRx, seen.TotalRx),
+		TotalTx:    plus(live.TotalTx, seen.TotalTx),
+	}
+	bw.retiredV6.BillableRx = max(seen.BillableRx, live.BillableRx)
+	bw.retiredV6.BillableTx = max(seen.BillableTx, live.BillableTx)
+	bw.retiredV6.TotalRx = max(seen.TotalRx, live.TotalRx)
+	bw.retiredV6.TotalTx = max(seen.TotalTx, live.TotalTx)
+	proxyRetiredV6.BillableRx += uint64(inc.BillableRx)
+	proxyRetiredV6.BillableTx += uint64(inc.BillableTx)
+	proxyRetiredV6.TotalRx += uint64(inc.TotalRx)
+	proxyRetiredV6.TotalTx += uint64(inc.TotalTx)
 }
 
 // ProxyBandwidthFamilyTotalsMonotonic is the series the provider exposes as a
@@ -746,15 +766,9 @@ func retireProxyV6Locked(bw *ProxyBandwidth) {
 // The chart keeps using ProxyBandwidthFamilyTotals, whose live sums let it
 // derive a consistent IPv4 share from the matching live base totals.
 func ProxyBandwidthFamilyTotalsMonotonic() ProxyBandwidthFamily {
-	var f ProxyBandwidthFamily
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
-	for _, retired := range proxyRetiredV6ByRecord {
-		f.BillableRx += retired.BillableRx
-		f.BillableTx += retired.BillableTx
-		f.TotalRx += retired.TotalRx
-		f.TotalTx += retired.TotalTx
-	}
+	f := proxyRetiredV6
 	for _, h := range proxyHealthByIndex {
 		if h.bw == nil {
 			continue
