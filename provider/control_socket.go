@@ -543,7 +543,7 @@ var liveDefaults = map[string]string{
 	"proxy_target_family": proxyTargetFamilyDefault,
 	"proxy_ipv6_probe":    "on",
 	// Clearing h1_plus restores the default: H1+ upgrades allowed.
-	"p2p_source_binding":     "count",
+	"p2p_source_binding":     connect.P2PSourceBindingDefault,
 	"p2p_forged_source_drop": "on",
 	"h1_plus":                "on",
 	// Clearing h3_datagram_send returns to the default: on, as upstream.

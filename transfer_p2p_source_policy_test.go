@@ -67,7 +67,7 @@ func setSourcePolicy(t *testing.T, mode string, forgedDrop bool) {
 	}
 	SetP2PForgedSourceDrop(forgedDrop)
 	t.Cleanup(func() {
-		_ = SetP2PSourceBinding("count")
+		_ = SetP2PSourceBinding(P2PSourceBindingDefault)
 		SetP2PForgedSourceDrop(true)
 	})
 }

@@ -310,6 +310,10 @@ type ReceivePack struct {
 	// wire companion hint, the decrypting session, or the EncryptedControl;
 	// defaults false. Keys the ReceiveSequence and its session.
 	EncryptionCompanion bool
+	// sourceMismatch records the outcome of a pack that named a source other
+	// than its bound lane's peer. nil for every other pack. The sequence
+	// decides it where the pack is delivered or discarded.
+	sourceMismatch *p2pSourceMismatch
 }
 
 type ForwardPack struct {
@@ -1273,30 +1277,6 @@ func (self *Client) AddForwardCallback(forwardCallback ForwardFunction) func() {
 	}
 }
 
-// plaintextReceiveDiscarded reports whether the receive sequence for sourceId
-// will discard a plaintext application frame. It mirrors the fail-closed gate
-// in ReceiveSequence: a session is expected for the source (so the source is
-// not the platform and this client holds an identity of its own) and the
-// session runs in EncryptionModeRequired. Such a frame is acked to keep the
-// sequence moving and then thrown away, so the receive path must not report it
-// as decoded.
-// packHasApplicationFrames reports whether the pack carries any frame that is not
-// an encrypted control frame. The receive gate routes control frames into the
-// session and discards only the application frames that remain.
-func packHasApplicationFrames(pack *protocol.Pack) bool {
-	for _, frame := range pack.GetFrames() {
-		if frame != nil && frame.GetMessageType() != protocol.MessageType_TransferEncryptedControl {
-			return true
-		}
-	}
-	return false
-}
-
-func (self *Client) plaintextReceiveDiscarded(sourceId Id) bool {
-	manager := self.encryptionSessionManager
-	return manager != nil && manager.RequireEncryption() && !manager.ReceiveNoSession(sourceId)
-}
-
 // run is the client's main loop, launched by NewClientWithTag. It is
 // started with the client's cancel as the HandleError error handler, so a
 // panic in the loop cancels the client context, tearing down the managers,
@@ -1434,19 +1414,21 @@ func (self *Client) run() {
 			MessagePoolReturn(transferFrameBytes)
 			continue
 		}
-		// The measured half: a frame on a lane bound to one peer naming
-		// another source. It is delivered and counted by default, because a
-		// multihop stream reaches a transit hop with the original source still
-		// in the frame and only the final destination can decrypt it.
-		var mismatch p2pSourceMismatch
+		// The bound half: a frame on a lane bound to one peer naming another
+		// source. It is dropped by default. Production streams are direct, so
+		// the bound peer is the stream's other end. The platform tells a
+		// multihop stream's endpoint only its adjacent hop, so such a stream
+		// needs `count` or `off` until the origin is authenticated. A transit
+		// hop relays the stream on its own route managers and never reaches
+		// this check.
+		var mismatch *p2pSourceMismatch
 		if boundSourceMismatch(disposition, path.SourceId) {
 			if mode := p2pSourceBindingMode(); mode == p2pSourceModeDrop {
-				mismatch = newP2PSourceMismatch(self, mode, true)
-				mismatch.dropped()
+				newP2PSourceMismatch(self, mode).dropped()
 				MessagePoolReturn(transferFrameBytes)
 				continue
 			} else if mode == p2pSourceModeCount {
-				mismatch = newP2PSourceMismatch(self, mode, true)
+				mismatch = newP2PSourceMismatch(self, mode)
 			}
 		}
 		if path.IsStream() {
@@ -1555,9 +1537,9 @@ func (self *Client) run() {
 				transferFrame = unwrappedTransferFrame
 			}
 			// The frame and the wrap it carried are parsed, but that is not the
-			// same as accepted: the ack and pack branches below record the
-			// outcome once the consumer took the frame, and a plaintext frame
-			// this client will discard records rejected instead.
+			// same as accepted: the ack branch below records the outcome once
+			// the send buffer took the ack, and the pack branch hands the record
+			// to the receive sequence, which decides it at delivery.
 
 			// A plaintext pack with a sender-role hint is the peer's
 			// EncryptedControl carrier (its server-role stream). Map the whole
@@ -1735,6 +1717,7 @@ func (self *Client) run() {
 						Unwrapped:           unwrapped,
 						EncryptionRole:      receiveRole,
 						EncryptionCompanion: receiveCompanion,
+						sourceMismatch:      mismatch,
 					}, self.settings.BufferTimeout)
 					if !owned {
 						MessagePoolReturn(transferFrameBytes)
@@ -1750,18 +1733,12 @@ func (self *Client) run() {
 				} else {
 					accepted = c()
 				}
-				switch {
-				case !accepted:
+				// An admitted pack belongs to its receive sequence, which records
+				// the outcome where the pack is delivered or discarded: the
+				// contract check and the fail-closed plaintext gate both run
+				// there, after admission.
+				if !accepted {
 					mismatch.rejected()
-				case unwrapped && packHasApplicationFrames(pack) && self.plaintextReceiveDiscarded(path.SourceId):
-					// The pack is acked, then its application frames are discarded
-					// by the fail-closed receive gate because this client requires
-					// encryption for this source. It was never accepted, so it is
-					// not decoded. A pack of encrypted control frames only is
-					// consumed by the session, not discarded, so it falls through.
-					mismatch.rejected()
-				default:
-					mismatch.decoded()
 				}
 			}
 		} else {
@@ -5683,6 +5660,7 @@ func (self *ReceiveSequence) Run() {
 			self.peerAudit.Update(func(a *PeerAudit) {
 				a.discard(item.messageByteCount)
 			})
+			item.sourceMismatch.rejected()
 			// MessagePoolReturn(item.transferFrameBytes)
 			item.messagePoolReturn()
 		}
@@ -5995,6 +5973,7 @@ func (self *ReceiveSequence) Run() {
 					// this item is the head of sequence
 					if err := self.registerContracts(item); err != nil {
 						self.logRegisterContractsError("exit", err)
+						item.sourceMismatch.rejected()
 						return
 					}
 					if self.updateContract(item) {
@@ -6004,6 +5983,7 @@ func (self *ReceiveSequence) Run() {
 					} else {
 						// no valid contract. it should have been attached to the head
 						self.log.Errorf("[r]drop head no contract %s<-%s s(%s)\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId)
+						item.sourceMismatch.rejected()
 						return
 					}
 				} else {
@@ -6011,6 +5991,7 @@ func (self *ReceiveSequence) Run() {
 					if item.ack {
 						self.sendAck(item.sequenceNumber, item.messageId, false, nil, item.unwrapped)
 					}
+					item.sourceMismatch.rejected()
 				}
 			}
 			// The delivery point has moved, so items that were held
@@ -6041,6 +6022,7 @@ func (self *ReceiveSequence) Run() {
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.badMessage(receivePack.MessageByteCount)
 					})
+					receivePack.sourceMismatch.rejected()
 					MessagePoolReturn(receivePack.TransferFrameBytes)
 					return
 				} else if !received {
@@ -6049,6 +6031,7 @@ func (self *ReceiveSequence) Run() {
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.discard(receivePack.MessageByteCount)
 					})
+					receivePack.sourceMismatch.rejected()
 					MessagePoolReturn(receivePack.TransferFrameBytes)
 				}
 
@@ -6062,6 +6045,9 @@ func (self *ReceiveSequence) Run() {
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.badMessage(receivePack.MessageByteCount)
 					})
+					// covers the no-contract head: the pack was admitted, then
+					// failed the contract check, so it was never delivered
+					receivePack.sourceMismatch.rejected()
 					MessagePoolReturn(receivePack.TransferFrameBytes)
 					return
 				} else if !received {
@@ -6070,6 +6056,7 @@ func (self *ReceiveSequence) Run() {
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.discard(receivePack.MessageByteCount)
 					})
+					receivePack.sourceMismatch.rejected()
 					MessagePoolReturn(receivePack.TransferFrameBytes)
 				}
 			}
@@ -6141,6 +6128,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 		tag:                receivePack.Pack.Tag,
 		transferFrameBytes: receivePack.TransferFrameBytes,
 		unwrapped:          receivePack.Unwrapped,
+		sourceMismatch:     receivePack.sourceMismatch,
 	}
 
 	// this case happens when the receiver is reformed or loses state.
@@ -6158,6 +6146,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 		self.peerAudit.Update(func(a *PeerAudit) {
 			a.resend(removedItem.messageByteCount)
 		})
+		removedItem.sourceMismatch.rejected()
 		removedItem.messagePoolReturn()
 	}
 
@@ -6166,6 +6155,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 		self.peerAudit.Update(func(a *PeerAudit) {
 			a.resend(removedItem.messageByteCount)
 		})
+		removedItem.sourceMismatch.rejected()
 		removedItem.messagePoolReturn()
 	}
 
@@ -6230,6 +6220,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 					self.client.receiveQueueTentativeEvictionByteCount.Add(
 						uint64(max(lastItem.MessageByteCount(), 0)))
 				}
+				lastItem.sourceMismatch.rejected()
 				lastItem.messagePoolReturn()
 			}
 		}
@@ -6403,7 +6394,8 @@ func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error)
 		// nack items send no ack, so `unwrapped` was historically unused here;
 		// the EncryptionModeRequired receive gate in `receiveHead` now reads it
 		// to refuse plaintext application frames on this path too
-		unwrapped: receivePack.Unwrapped,
+		unwrapped:      receivePack.Unwrapped,
+		sourceMismatch: receivePack.sourceMismatch,
 	}
 
 	if err := self.registerContracts(item); err != nil {
@@ -6488,8 +6480,13 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 				"plaintext application frames discarded",
 			)
 			appFrames = nil
+			item.sourceMismatch.rejected()
 		}
 	}
+	// The delivery point: the item passed the contract check, and its frames
+	// reach the application or the session. A discarded item recorded rejected
+	// above, so this records nothing for it.
+	item.sourceMismatch.decoded()
 	if 0 < len(appFrames) {
 		item.receiveCallback(
 			self.source,
@@ -6730,6 +6727,7 @@ func (self *ReceiveSequence) Close() {
 				if !ok {
 					return
 				}
+				receivePack.sourceMismatch.rejected()
 				MessagePoolReturn(receivePack.TransferFrameBytes)
 			default:
 				return
@@ -6774,6 +6772,8 @@ type receiveItem struct {
 	// only when it can no longer be evicted (upstream connect THROUGHPUTFIX §37.20). A
 	// committed item is never discarded.
 	committed bool
+	// sourceMismatch is the pack's source mismatch record, nil for most items.
+	sourceMismatch *p2pSourceMismatch
 }
 
 func (self *receiveItem) messagePoolReturn() {
