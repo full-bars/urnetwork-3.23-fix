@@ -10,6 +10,7 @@ func resetProxyHealthForTest() {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
 	proxyHealthByIndex = map[int]*proxyHealth{}
+	proxyRetiredV6ByIdentity = map[string]ProxyBandwidthFamily{}
 	proxyLifetimeRecovered = 0
 	proxyLifetimeLost = 0
 	proxyBaselineSet = false

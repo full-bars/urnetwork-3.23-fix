@@ -35,6 +35,35 @@ func TestProviderMetricsExpositionLints(t *testing.T) {
 	}
 }
 
+func TestV6TrafficCounterDoesNotRewindWhenProxyLeaves(t *testing.T) {
+	withTempHome(t)
+	connect.SetExtraMetricsProvider(providerExtraMetrics)
+	t.Cleanup(func() { connect.SetExtraMetricsProvider(nil) })
+
+	sample := func() string {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/metrics", nil)
+		w := httptest.NewRecorder()
+		connect.PrometheusHandler().ServeHTTP(w, req)
+		for _, line := range strings.Split(w.Body.String(), "\n") {
+			if strings.HasPrefix(line, `urnet_traffic_v6_bytes_total{kind="total",dir="rx"} `) {
+				return line
+			}
+		}
+		t.Fatal("the IPv6 traffic counter is missing from the scrape")
+		return ""
+	}
+
+	bw := connect.RegisterProxyBandwidth(900011)
+	bw.TotalRxV6.Store(777)
+	before := sample()
+	connect.UnregisterProxy(900011)
+	after := sample()
+	if before != after {
+		t.Fatalf("counter rewound on unregister: before %q, after %q", before, after)
+	}
+}
+
 // The cancellation counter is only usable by a canary if the provider serves
 // it: every cell the accessor reports must appear in the scrape, with that
 // cell's value behind it.

@@ -229,6 +229,11 @@ var (
 	// identities and must not shadow each other here.
 	proxyHealthByKey = map[string]*proxyHealth{}
 
+	// Final IPv6 counters of proxies that have left the pool, keyed by identity.
+	// Only the metrics series uses them: the chart's derived IPv4 split must keep
+	// reading live totals, while a Prometheus counter must never go backwards.
+	proxyRetiredV6ByIdentity = map[string]ProxyBandwidthFamily{}
+
 	proxyLifetimeRecovered int
 	proxyLifetimeLost      int
 	proxyBaselineSet       bool
@@ -485,6 +490,7 @@ func UnregisterProxy(id int) {
 		// Persist the final byte totals before the record goes away, so bytes
 		// moved since the last flush are not lost with it.
 		foldProxyBandwidthLocked(h.key, h.bw)
+		retireProxyV6Locked(h.key, id, h.bw)
 	}
 	delete(proxyHealthByIndex, id)
 }
@@ -712,6 +718,56 @@ func ProxyBandwidthPacketTotals() (billableRxPackets, billableTxPackets uint64) 
 type ProxyBandwidthFamily struct {
 	BillableRx, BillableTx uint64
 	TotalRx, TotalTx       uint64
+}
+
+// retireProxyV6Locked carries a departing proxy's IPv6 bytes forward for the
+// metrics counter. Taking the maximum keeps a second removal of the same
+// identity from counting the same bytes twice. Caller holds proxyHealthMu.
+func retireProxyV6Locked(key string, id int, bw *ProxyBandwidth) {
+	if bw == nil {
+		return
+	}
+	if key == "" {
+		key = fmt.Sprintf("index:%d", id)
+	}
+	live := ProxyBandwidthFamily{
+		BillableRx: bw.BillableRxV6.Load(),
+		BillableTx: bw.BillableTxV6.Load(),
+		TotalRx:    bw.TotalRxV6.Load(),
+		TotalTx:    bw.TotalTxV6.Load(),
+	}
+	seen := proxyRetiredV6ByIdentity[key]
+	seen.BillableRx = max(seen.BillableRx, live.BillableRx)
+	seen.BillableTx = max(seen.BillableTx, live.BillableTx)
+	seen.TotalRx = max(seen.TotalRx, live.TotalRx)
+	seen.TotalTx = max(seen.TotalTx, live.TotalTx)
+	proxyRetiredV6ByIdentity[key] = seen
+}
+
+// ProxyBandwidthFamilyTotalsMonotonic is the series the provider exposes as a
+// counter: live IPv6 bytes plus the final bytes of proxies that have left.
+// The chart keeps using ProxyBandwidthFamilyTotals, whose live sums let it
+// derive a consistent IPv4 share from the matching live base totals.
+func ProxyBandwidthFamilyTotalsMonotonic() ProxyBandwidthFamily {
+	var f ProxyBandwidthFamily
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for _, retired := range proxyRetiredV6ByIdentity {
+		f.BillableRx += retired.BillableRx
+		f.BillableTx += retired.BillableTx
+		f.TotalRx += retired.TotalRx
+		f.TotalTx += retired.TotalTx
+	}
+	for _, h := range proxyHealthByIndex {
+		if h.bw == nil {
+			continue
+		}
+		f.BillableRx += h.bw.BillableRxV6.Load()
+		f.BillableTx += h.bw.BillableTxV6.Load()
+		f.TotalRx += h.bw.TotalRxV6.Load()
+		f.TotalTx += h.bw.TotalTxV6.Load()
+	}
+	return f
 }
 
 // ProxyBandwidthFamilyTotals sums the IPv6 byte counters across every registered
@@ -1017,6 +1073,7 @@ func UnregisterProxyByKey(key string) {
 	if !ok {
 		return
 	}
+	retireProxyV6Locked(h.key, 0, h.bw)
 	delete(proxyHealthByKey, key)
 	for idx, entry := range proxyHealthByIndex {
 		if entry == h {

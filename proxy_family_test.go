@@ -49,6 +49,25 @@ func TestProxyBandwidthFamilyTotalsSumsV6(t *testing.T) {
 	}
 }
 
+// TestProxyBandwidthFamilyCounterHoldsWhenProxyLeaves proves the monotonic
+// series keeps a departing proxy's bytes while the live series drops them.
+func TestProxyBandwidthFamilyCounterHoldsWhenProxyLeaves(t *testing.T) {
+	resetProxyHealthForTest()
+
+	bw := RegisterProxyBandwidth(11)
+	bw.BillableRxV6.Store(20)
+	bw.BillableTxV6.Store(10)
+	bw.TotalRxV6.Store(30)
+	bw.TotalTxV6.Store(40)
+	before := ProxyBandwidthFamilyTotalsMonotonic()
+
+	UnregisterProxy(11)
+	wantFamily(t, ProxyBandwidthFamilyTotalsMonotonic(), before, "monotonic family totals after unregister")
+	if live := ProxyBandwidthFamilyTotals(); live != (ProxyBandwidthFamily{}) {
+		t.Fatalf("live family totals after unregister = %+v, want zero", live)
+	}
+}
+
 // TestBillableRxTxIPv6Split proves the billable accounting paths credit the IPv6
 // counters only for IPv6 packets and never swap rx with tx.
 func TestBillableRxTxIPv6Split(t *testing.T) {
