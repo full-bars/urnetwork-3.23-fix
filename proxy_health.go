@@ -85,12 +85,18 @@ func (self *ProxyBandwidth) WithTrafficUpdate(update func()) {
 	update()
 }
 
+// addTraffic credits count to the base counter and, for IPv6 traffic, to the
+// matching IPv6 counter. Only the IPv6 pair takes trafficMu: an IPv4 credit is
+// a single atomic add, so a snapshot sees it either whole or not at all, and
+// the IPv4 path stays free of the lock.
 func (self *ProxyBandwidth) addTraffic(base, v6 *atomic.Uint64, count uint64, isV6 bool) {
+	if !isV6 {
+		base.Add(count)
+		return
+	}
 	self.WithTrafficUpdate(func() {
 		base.Add(count)
-		if isV6 {
-			v6.Add(count)
-		}
+		v6.Add(count)
 	})
 }
 
