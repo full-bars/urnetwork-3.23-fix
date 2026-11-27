@@ -87,6 +87,9 @@ type ExtenderDialStats struct {
 	Timeout  uint64 `json:"timeout"`
 	Refused  uint64 `json:"refused"`
 	Canceled uint64 `json:"canceled"`
+	Backoff  uint64 `json:"backoff"`
+	NoAddrs  uint64 `json:"no_addrs"`
+	Gated    uint64 `json:"gated"`
 	Other    uint64 `json:"other"`
 }
 
@@ -365,7 +368,7 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 		}
 		if d.DialStats != nil {
 			dials := d.DialStats
-			fmt.Fprintf(w, "    Gossip dials: %d attempts; failures timeout=%d refused=%d canceled=%d other=%d\n", dials.Attempts, dials.Timeout, dials.Refused, dials.Canceled, dials.Other)
+			fmt.Fprintf(w, "    Gossip dials: %d attempts; failures timeout=%d refused=%d canceled=%d backoff=%d no_addrs=%d gated=%d other=%d\n", dials.Attempts, dials.Timeout, dials.Refused, dials.Canceled, dials.Backoff, dials.NoAddrs, dials.Gated, dials.Other)
 		} else {
 			fmt.Fprintln(w, "    Gossip dials: not reported")
 		}

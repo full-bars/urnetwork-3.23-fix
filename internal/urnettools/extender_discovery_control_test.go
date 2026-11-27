@@ -100,7 +100,7 @@ func TestExtenderDiscoveryCounterCompatibility(t *testing.T) {
 			formatExtenderBlock(&b, ExtenderReading{Source: SourceControlSocket, Running: true, Discovery: &d}, time.Time{})
 			wantDials := "Gossip dials: not reported"
 			if tc.present {
-				wantDials = "Gossip dials: 2 attempts; failures timeout=1 refused=0 canceled=0 other=0"
+				wantDials = "Gossip dials: 2 attempts; failures timeout=1 refused=0 canceled=0 backoff=0 no_addrs=0 gated=0 other=0"
 			}
 			if !strings.Contains(b.String(), wantDials) {
 				t.Fatalf("missing dial stats %q: %s", wantDials, b.String())

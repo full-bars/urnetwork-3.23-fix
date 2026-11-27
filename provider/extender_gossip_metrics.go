@@ -21,5 +21,8 @@ func writeGossipDialMetrics(b *strings.Builder, stats *gossip.DialStats) {
 	fmt.Fprintf(b, "urnet_gossip_dial_failures_total{class=\"timeout\"} %d\n", stats.Timeout)
 	fmt.Fprintf(b, "urnet_gossip_dial_failures_total{class=\"refused\"} %d\n", stats.Refused)
 	fmt.Fprintf(b, "urnet_gossip_dial_failures_total{class=\"canceled\"} %d\n", stats.Canceled)
+	fmt.Fprintf(b, "urnet_gossip_dial_failures_total{class=\"backoff\"} %d\n", stats.Backoff)
+	fmt.Fprintf(b, "urnet_gossip_dial_failures_total{class=\"no_addrs\"} %d\n", stats.NoAddrs)
+	fmt.Fprintf(b, "urnet_gossip_dial_failures_total{class=\"gated\"} %d\n", stats.Gated)
 	fmt.Fprintf(b, "urnet_gossip_dial_failures_total{class=\"other\"} %d\n", stats.Other)
 }
