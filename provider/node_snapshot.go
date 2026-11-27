@@ -668,20 +668,26 @@ func (s *directionSampler) packetRate(lane int) SnapshotPacketRate {
 }
 
 // familySplit builds one quantity's V4 and V6 rates. V6 is its own lane. V4 is
-// the base lane minus the V6 lane sample by sample, clamped at zero: the base
-// and the V6 counter are separate atomics, so a tick can read the V6 delta one
-// sample ahead of the base it belongs to and leave a small negative difference.
+// the base lane minus the V6 lane sample by sample. The base and
+// V6 counter are separate atomics, so a tick can read the V6 delta one
+// sample ahead of the base it belongs to. The negative difference is carried
+// into the next sample instead of being discarded, so the base catching up
+// does not show up as IPv4 traffic.
 func (s *directionSampler) familySplit(lane, laneV6 int) SnapshotFamilySplit {
 	base := s.history(lane)
 	v6 := s.history(laneV6)
 	v4 := make([]int64, len(base))
+	var carry int64
 	for i := range base {
-		d := base[i]
+		d := base[i] - carry
 		if i < len(v6) {
 			d -= v6[i]
 		}
 		if d < 0 {
+			carry = -d
 			d = 0
+		} else {
+			carry = 0
 		}
 		v4[i] = d
 	}
