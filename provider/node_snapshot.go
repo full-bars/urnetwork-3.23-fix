@@ -527,9 +527,8 @@ type directionSampler struct {
 	prev     map[string]directionLanes
 	prevTime time.Time
 	rings    [directionLaneCount][snapshotRingSize]int64
-	elapsed  [snapshotRingSize]float64 // seconds behind each recorded rate sample
-	next     int                       // slot the next sample is written to
-	count    int                       // valid samples, capped at snapshotRingSize
+	next     int // slot the next sample is written to
+	count    int // valid samples, capped at snapshotRingSize
 	// session keeps every delta counted since the provider started, per lane.
 	session [directionLaneCount]uint64
 	// recorded counts every sample ever written to the rings, so the newest
@@ -604,7 +603,6 @@ func (s *directionSampler) sample(cur map[string]directionLanes, now time.Time) 
 	if elapsed < 1 {
 		elapsed = 1
 	}
-	s.elapsed[s.next] = elapsed
 	for i := range deltas {
 		s.rings[i][s.next] = int64(float64(deltas[i]) / elapsed)
 	}
@@ -623,19 +621,6 @@ func (s *directionSampler) history(lane int) []int64 {
 	start := (s.next - s.count + snapshotRingSize) % snapshotRingSize
 	for i := 0; i < s.count; i++ {
 		out[i] = s.rings[lane][(start+i)%snapshotRingSize]
-	}
-	return out
-}
-
-// historyElapsed returns the interval seconds behind each rate sample, oldest
-// first, in the same order as history.
-func (s *directionSampler) historyElapsed() []float64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]float64, s.count)
-	start := (s.next - s.count + snapshotRingSize) % snapshotRingSize
-	for i := 0; i < s.count; i++ {
-		out[i] = s.elapsed[(start+i)%snapshotRingSize]
 	}
 	return out
 }
@@ -685,30 +670,26 @@ func (s *directionSampler) packetRate(lane int) SnapshotPacketRate {
 // familySplit builds one quantity's V4 and V6 rates. V6 is its own lane. V4 is
 // the base lane minus the V6 lane sample by sample. The base and
 // V6 counter are separate atomics, so a tick can read the V6 delta one
-// sample ahead of the base it belongs to. The deficit is measured in bytes and
-// carried into the next sample instead of being discarded, so the base catching
-// up does not show up as IPv4 traffic even when intervals differ.
+// sample ahead of the base it belongs to. The negative difference is carried
+// into the next sample instead of being discarded, so the base catching up
+// does not show up as IPv4 traffic.
 func (s *directionSampler) familySplit(lane, laneV6 int) SnapshotFamilySplit {
 	base := s.history(lane)
 	v6 := s.history(laneV6)
-	spans := s.historyElapsed()
 	v4 := make([]int64, len(base))
-	var carry float64 // IPv6 bytes the base counter has not reported yet
+	var carry int64
 	for i := range base {
-		span := spans[i]
-		if span <= 0 {
-			span = 1
+		d := base[i] - carry
+		if i < len(v6) {
+			d -= v6[i]
 		}
-		baseBytes := float64(base[i]) * span
-		v6Bytes := float64(v6[i]) * span
-		v4Bytes := baseBytes - carry - v6Bytes
-		if v4Bytes < 0 {
-			carry = -v4Bytes
-			v4Bytes = 0
+		if d < 0 {
+			carry = -d
+			d = 0
 		} else {
 			carry = 0
 		}
-		v4[i] = int64(v4Bytes / span)
+		v4[i] = d
 	}
 	return SnapshotFamilySplit{
 		V4: s.direction(lane, v4),
