@@ -229,10 +229,10 @@ var (
 	// identities and must not shadow each other here.
 	proxyHealthByKey = map[string]*proxyHealth{}
 
-	// Final IPv6 counters of proxies that have left the pool, keyed by identity.
-	// Only the metrics series uses them: the chart's derived IPv4 split must keep
-	// reading live totals, while a Prometheus counter must never go backwards.
-	proxyRetiredV6ByIdentity = map[string]ProxyBandwidthFamily{}
+	// Final IPv6 counters of bandwidth records that have left the pool. Keyed
+	// by record rather than identity so a re-registration with a fresh record
+	// adds its own contribution instead of replacing the retired one.
+	proxyRetiredV6ByRecord = map[*ProxyBandwidth]ProxyBandwidthFamily{}
 
 	proxyLifetimeRecovered int
 	proxyLifetimeLost      int
@@ -490,7 +490,7 @@ func UnregisterProxy(id int) {
 		// Persist the final byte totals before the record goes away, so bytes
 		// moved since the last flush are not lost with it.
 		foldProxyBandwidthLocked(h.key, h.bw)
-		retireProxyV6Locked(h.key, id, h.bw)
+		retireProxyV6Locked(h.bw)
 	}
 	delete(proxyHealthByIndex, id)
 }
@@ -722,13 +722,10 @@ type ProxyBandwidthFamily struct {
 
 // retireProxyV6Locked carries a departing proxy's IPv6 bytes forward for the
 // metrics counter. Taking the maximum keeps a second removal of the same
-// identity from counting the same bytes twice. Caller holds proxyHealthMu.
-func retireProxyV6Locked(key string, id int, bw *ProxyBandwidth) {
+// record from counting its bytes twice. Caller holds proxyHealthMu.
+func retireProxyV6Locked(bw *ProxyBandwidth) {
 	if bw == nil {
 		return
-	}
-	if key == "" {
-		key = fmt.Sprintf("index:%d", id)
 	}
 	live := ProxyBandwidthFamily{
 		BillableRx: bw.BillableRxV6.Load(),
@@ -736,12 +733,12 @@ func retireProxyV6Locked(key string, id int, bw *ProxyBandwidth) {
 		TotalRx:    bw.TotalRxV6.Load(),
 		TotalTx:    bw.TotalTxV6.Load(),
 	}
-	seen := proxyRetiredV6ByIdentity[key]
+	seen := proxyRetiredV6ByRecord[bw]
 	seen.BillableRx = max(seen.BillableRx, live.BillableRx)
 	seen.BillableTx = max(seen.BillableTx, live.BillableTx)
 	seen.TotalRx = max(seen.TotalRx, live.TotalRx)
 	seen.TotalTx = max(seen.TotalTx, live.TotalTx)
-	proxyRetiredV6ByIdentity[key] = seen
+	proxyRetiredV6ByRecord[bw] = seen
 }
 
 // ProxyBandwidthFamilyTotalsMonotonic is the series the provider exposes as a
@@ -752,7 +749,7 @@ func ProxyBandwidthFamilyTotalsMonotonic() ProxyBandwidthFamily {
 	var f ProxyBandwidthFamily
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
-	for _, retired := range proxyRetiredV6ByIdentity {
+	for _, retired := range proxyRetiredV6ByRecord {
 		f.BillableRx += retired.BillableRx
 		f.BillableTx += retired.BillableTx
 		f.TotalRx += retired.TotalRx
@@ -1073,7 +1070,7 @@ func UnregisterProxyByKey(key string) {
 	if !ok {
 		return
 	}
-	retireProxyV6Locked(h.key, 0, h.bw)
+	retireProxyV6Locked(h.bw)
 	delete(proxyHealthByKey, key)
 	for idx, entry := range proxyHealthByIndex {
 		if entry == h {
