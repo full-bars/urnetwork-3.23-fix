@@ -1083,6 +1083,38 @@ func (self *Node) runPeering() {
 // Connects to every operator address and to enough extenders to reach the
 // target. The dials run together and are joined here, so a round never
 // outlives the loop that started it.
+func allAddrsBackedOff(info peer.AddrInfo, backoff func(peer.ID, ma.Multiaddr) bool) bool {
+	if len(info.Addrs) == 0 {
+		return false
+	}
+	for _, addr := range info.Addrs {
+		if !backoff(info.ID, addr) {
+			return false
+		}
+	}
+	return true
+}
+
+func selectExtenderDials(candidates []peer.AddrInfo, target int, connected func(peer.ID) bool, backedOff func(peer.AddrInfo) bool) ([]peer.AddrInfo, bool) {
+	count := 0
+	var pending []peer.AddrInfo
+	skipped := false
+	for _, info := range candidates {
+		if connected(info.ID) {
+			count++
+		} else if backedOff(info) {
+			skipped = true
+		} else {
+			pending = append(pending, info)
+		}
+	}
+	remaining := max(0, target-count)
+	if remaining < len(pending) {
+		pending = pending[:remaining]
+	}
+	return pending, skipped && count < target
+}
+
 func (self *Node) peer() {
 	addrInfos := []peer.AddrInfo{}
 	for _, operatorAddr := range self.OperatorAddrs() {
@@ -1098,22 +1130,13 @@ func (self *Node) peer() {
 
 	// the extender target is counted on its own: the operator link is not one
 	// of the `PeerTarget` extenders (D3)
-	extenderCount := 0
-	pendingAddrInfos := []peer.AddrInfo{}
-	for _, addrInfo := range self.extenderPeers() {
-		if self.host.Network().Connectedness(addrInfo.ID) == network.Connected {
-			extenderCount += 1
-			continue
-		}
-		pendingAddrInfos = append(pendingAddrInfos, addrInfo)
-	}
-	for _, addrInfo := range pendingAddrInfos {
-		if self.settings.PeerTarget <= extenderCount {
-			break
-		}
-		addrInfos = append(addrInfos, addrInfo)
-		extenderCount += 1
-	}
+	pendingAddrInfos, _ := selectExtenderDials(self.extenderPeers(), self.settings.PeerTarget,
+		func(id peer.ID) bool { return self.host.Network().Connectedness(id) == network.Connected },
+		func(info peer.AddrInfo) bool {
+			s, ok := self.host.Network().(*swarm.Swarm)
+			return ok && allAddrsBackedOff(info, s.Backoff().Backoff)
+		})
+	addrInfos = append(addrInfos, pendingAddrInfos...)
 
 	// what this round chose is all the swarm may dial until the next round
 	// (node_gater.go); the previous round's dials were joined before this one
