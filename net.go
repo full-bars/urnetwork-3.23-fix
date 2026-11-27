@@ -1140,9 +1140,21 @@ func addrIsV6(addr net.Addr) bool {
 	if addr == nil {
 		return false
 	}
+	// The concrete address already carries a parsed IP. Reading it directly
+	// also keeps its zone, which ParseIP rejects in a string literal.
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		return a.IP != nil && a.IP.To4() == nil
+	case *net.UDPAddr:
+		return a.IP != nil && a.IP.To4() == nil
+	}
 	host, _, err := net.SplitHostPort(addr.String())
 	if err != nil {
 		host = addr.String()
+	}
+	// A zone is part of a valid IPv6 literal, not part of the address to parse.
+	if i := strings.LastIndex(host, "%"); 0 <= i {
+		host = host[:i]
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.To4() == nil

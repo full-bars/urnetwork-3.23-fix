@@ -30,6 +30,9 @@ func TestAddrIsV6(t *testing.T) {
 		{"nil", nil, false},
 		{"ipv4 host port", &net.UDPAddr{IP: net.IPv4(203, 0, 113, 9), Port: 443}, false},
 		{"ipv6 host port", &net.UDPAddr{IP: net.ParseIP("2001:db8::1"), Port: 443}, true},
+		{"zoned ipv6 host port", &net.UDPAddr{IP: net.ParseIP("fe80::1"), Zone: "eth0", Port: 443}, true},
+		{"zoned ipv6 host only", &net.TCPAddr{IP: net.ParseIP("fe80::1"), Zone: "eth0"}, true},
+		{"zoned ipv6 string", testAddr("[fe80::1%eth0]:443"), true},
 		{"ipv4 host only", &net.TCPAddr{IP: net.IPv4(203, 0, 113, 9)}, false},
 		{"unparseable", testAddr("not-an-address"), false},
 	}
