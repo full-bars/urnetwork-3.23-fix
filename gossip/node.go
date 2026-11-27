@@ -1080,9 +1080,9 @@ func (self *Node) runPeering() {
 	}
 }
 
-// Connects to every operator address and to enough extenders to reach the
-// target. The dials run together and are joined here, so a round never
-// outlives the loop that started it.
+// allAddrsBackedOff reports whether libp2p holds every address of the peer in
+// dial backoff, so a dial now would fail at once without reaching the network.
+// A peer with no addresses is not treated as backed off.
 func allAddrsBackedOff(info peer.AddrInfo, backoff func(peer.ID, ma.Multiaddr) bool) bool {
 	if len(info.Addrs) == 0 {
 		return false
@@ -1095,6 +1095,10 @@ func allAddrsBackedOff(info peer.AddrInfo, backoff func(peer.ID, ma.Multiaddr) b
 	return true
 }
 
+// selectExtenderDials picks the extenders to dial this round. Connected peers
+// count toward the target, peers in backoff are skipped, and the free slots go
+// to the next candidates in order. The second result reports that a backed-off
+// peer was skipped while the target is still unmet.
 func selectExtenderDials(candidates []peer.AddrInfo, target int, connected func(peer.ID) bool, backedOff func(peer.AddrInfo) bool) ([]peer.AddrInfo, bool) {
 	count := 0
 	var pending []peer.AddrInfo
@@ -1115,6 +1119,9 @@ func selectExtenderDials(candidates []peer.AddrInfo, target int, connected func(
 	return pending, skipped && count < target
 }
 
+// Connects to every operator address and to enough extenders to reach the
+// target. The dials run together and are joined here, so a round never
+// outlives the loop that started it.
 func (self *Node) peer() {
 	addrInfos := []peer.AddrInfo{}
 	for _, operatorAddr := range self.OperatorAddrs() {
