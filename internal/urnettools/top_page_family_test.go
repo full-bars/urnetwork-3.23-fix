@@ -331,6 +331,49 @@ func TestTopFamilyPageGoldens(t *testing.T) {
 	assertGolden(t, "top_page_family_colorblind_80x24", colorblind)
 }
 
+// Coincident families remain visible in both halves of the monochrome chart.
+func TestTopFamilyPageASCIIOverlap(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := newTestModel(tui.MonoTheme(), topProviders(1), clock)
+	s := familyFixture(t)
+	f := s.Traffic.Directions.Families
+	f.BillableTx.V6.HistoryBps = append([]float64(nil), f.BillableTx.V4.HistoryBps...)
+	f.BillableRx.V6.HistoryBps = append([]float64(nil), f.BillableRx.V4.HistoryBps...)
+	m.apply(0, s, nil)
+	m.page = pageByID(familyPageID)
+	b := tui.New(80, 24)
+	renderFresh(m, b)
+
+	lines := strings.Split(b.String(), "\n")
+	center := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "|") && strings.Trim(line, "|-") == "" {
+			center = i
+			break
+		}
+	}
+	if center < 0 {
+		t.Fatalf("missing chart center:\n%s", b.String())
+	}
+	for _, half := range []struct {
+		name  string
+		lines []string
+	}{
+		{"upload", lines[:center]},
+		{"download", lines[center+1:]},
+	} {
+		found := false
+		for _, line := range half.lines {
+			if strings.HasPrefix(line, "|") && strings.Contains(line, "*") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s chart is missing the overlap glyph:\n%s", half.name, b.String())
+		}
+	}
+}
+
 // The ASCII fallback tells the two families apart by glyph, because a theme with
 // no colour has nothing else to separate them with.
 func TestTopFamilyPageASCIIGlyphs(t *testing.T) {

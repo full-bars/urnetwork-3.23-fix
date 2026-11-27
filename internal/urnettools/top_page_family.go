@@ -171,12 +171,12 @@ func (m *topModel) drawFamilyPage(b *tui.Buffer, content tui.Rect) {
 	upGroup, downGroup := directionGroups(familyPageID)
 	chart := remoteChart{
 		Up: []remoteSeries{
-			{Label: "IPv4", Style: v4Style, Glyph: '#', Group: upGroup, Values: v4Up},
-			{Label: "IPv6", Style: v6Style, Glyph: '+', Group: upGroup, Values: v6Up},
+			{Label: "IPv4", Style: v4Style, Glyph: '#', OverlapGlyph: '*', Group: upGroup, Values: v4Up},
+			{Label: "IPv6", Style: v6Style, Glyph: '+', OverlapGlyph: '*', Group: upGroup, Values: v6Up},
 		},
 		Down: []remoteSeries{
-			{Label: "IPv4", Style: v4Style, Glyph: '#', Group: downGroup, Values: v4Down},
-			{Label: "IPv6", Style: v6Style, Glyph: '+', Group: downGroup, Values: v6Down},
+			{Label: "IPv4", Style: v4Style, Glyph: '#', OverlapGlyph: '*', Group: downGroup, Values: v4Down},
+			{Label: "IPv6", Style: v6Style, Glyph: '+', OverlapGlyph: '*', Group: downGroup, Values: v6Down},
 		},
 		Now:      m.now(),
 		Newest:   newest,

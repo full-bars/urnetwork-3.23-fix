@@ -47,15 +47,17 @@ var (
 // remoteSeries is one curve: evenly spaced samples, oldest first, the newest at
 // the chart's Newest time. Group names the scale it is drawn against. Glyph is
 // the character the ASCII fallback draws; zero picks one from the series order.
+// OverlapGlyph optionally marks shared ASCII cells with another series.
 // Packets marks a packet rate series, formatted in pkt/s rather than bytes per
 // second in the corner figures.
 type remoteSeries struct {
-	Label   string
-	Style   tui.Style
-	Group   string
-	Glyph   rune
-	Packets bool
-	Values  []float64
+	Label        string
+	Style        tui.Style
+	Group        string
+	Glyph        rune
+	OverlapGlyph rune
+	Packets      bool
+	Values       []float64
 }
 
 // remoteChart is one frame of the mirrored chart. Now is the clock the plot
@@ -448,7 +450,7 @@ func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSe
 			if len(pts) == 0 {
 				continue
 			}
-			c.drawHalfASCII(b, s, pts, scales[s.Group], up, y0, rows, i)
+			c.drawHalfASCII(b, s, pts, scales[s.Group], up, y0, rows, i, dir)
 		}
 		return
 	}
@@ -481,7 +483,7 @@ func anyPositive(vals []float64) bool {
 
 // drawHalfASCII is the fallback for terminals without braille: one column per
 // cell, the curve drawn as a run of glyphs from the center outward.
-func (c remoteChart) drawHalfASCII(b *tui.Buffer, s remoteSeries, pts []remotePoint, scale float64, up bool, y0, rows, idx int) {
+func (c remoteChart) drawHalfASCII(b *tui.Buffer, s remoteSeries, pts []remotePoint, scale float64, up bool, y0, rows, idx int, dir []remoteSeries) {
 	if scale <= 0 {
 		scale = 1
 	}
@@ -498,7 +500,21 @@ func (c remoteChart) drawHalfASCII(b *tui.Buffer, s remoteSeries, pts []remotePo
 			if !up {
 				y = y0 + i
 			}
-			b.Set(x, y, tui.Cell{Rune: glyph, Style: s.Style})
+			cellGlyph := glyph
+			if s.OverlapGlyph != 0 {
+				old := b.Cell(x, y).Rune
+				for j := idx + 1; j < len(dir); j++ {
+					other := dir[j].Glyph
+					if other == 0 {
+						other = []rune{'#', '+', '*', 'o'}[j%4]
+					}
+					if (old == other && other != glyph) || old == s.OverlapGlyph {
+						cellGlyph = s.OverlapGlyph
+						break
+					}
+				}
+			}
+			b.Set(x, y, tui.Cell{Rune: cellGlyph, Style: s.Style})
 		}
 	}
 }
