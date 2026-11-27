@@ -32,6 +32,81 @@ func TestP2PSourceMismatchPlaintextRejectedWhenEncryptionRequired(t *testing.T) 
 	}
 }
 
+// A plaintext pack that carries only encrypted control frames is taken by the
+// per-peer session, not thrown away by the fail-closed gate: the gate discards
+// application frames, and there are none. Such a pack counts decoded, while a
+// pack that also carries an application frame is still discarded and counted
+// rejected.
+func TestP2PSourceMismatchControlOnlyPackDecoded(t *testing.T) {
+	controlBytes, err := proto.Marshal(&protocol.EncryptedControl{
+		ControlType: protocol.EncryptedControlType_EncryptedControlHandshake,
+		SessionRole: protocol.SequenceRole_SequenceRoleClient,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appBytes, err := proto.Marshal(&protocol.SimpleMessage{Content: "stripped"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := &protocol.Frame{
+		MessageType:  protocol.MessageType_TransferEncryptedControl,
+		MessageBytes: controlBytes,
+	}
+	app := &protocol.Frame{
+		MessageType:  protocol.MessageType_TestSimpleMessage,
+		MessageBytes: appBytes,
+	}
+
+	cases := []struct {
+		name    string
+		frames  []*protocol.Frame
+		decoded bool
+	}{
+		{"control only", []*protocol.Frame{control}, true},
+		{"control and application", []*protocol.Frame{control, app}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setSourcePolicy(t, "count", true)
+			peer := NewId()
+			client, route := newSourcePolicyClientWithEncryption(t, TransportTypeP2p, peer, 2, EncryptionModeRequired)
+			delivered := deliverContent(client)
+			third := NewId()
+			client.ContractManager().AddNoContractPeer(third)
+
+			route <- marshalTransferFrameForTest(t, &protocol.TransferFrame{
+				TransferPath: TransferPath{SourceId: third, DestinationId: client.ClientId()}.ToProtobuf(),
+				Pack: &protocol.Pack{
+					MessageId:      NewId().Bytes(),
+					SequenceId:     NewId().Bytes(),
+					SequenceNumber: 0,
+					Head:           true,
+					Frames:         tc.frames,
+				},
+			})
+
+			waitP2PSourceStats(t, client, func(stats ClientReceiveStatsSnapshot) bool {
+				return stats.SourceMismatchCount == 1
+			}, "one mismatch outcome")
+			stats := client.ReceiveStats()
+			if tc.decoded {
+				if stats.SourceMismatchDecodedCount != 1 || stats.SourceMismatchRejectedCount != 0 {
+					t.Fatalf("a control-only pack must count decoded, not rejected: %+v", stats)
+				}
+			} else {
+				if stats.SourceMismatchRejectedCount != 1 || stats.SourceMismatchDecodedCount != 0 {
+					t.Fatalf("a pack with an application frame must count rejected: %+v", stats)
+				}
+			}
+			if stats.SourceMismatchDroppedCount != 0 {
+				t.Fatalf("unexpected dropped outcome: %+v", stats)
+			}
+			expectNoDelivery(t, delivered)
+		})
+	}
+}
+
 // A frame that claims a third-party source and then fails to parse was never
 // accepted, so it is counted rejected rather than decoded. Each case is a
 // different way for the parse to fail after the path has been read.
