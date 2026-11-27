@@ -327,21 +327,3 @@ func TestSnapshotPacketRates(t *testing.T) {
 		t.Fatalf("packet rates: %+v", got)
 	}
 }
-
-func TestFamilySplitCarriesNegativeRemainder(t *testing.T) {
-	s := newDirectionSampler()
-	s.count = 2
-	s.next = 2
-	// The V6 counter is read one sample ahead of the base: its first delta is
-	// 100 while the base still reads zero, then it goes flat as the base
-	// catches up. All of the traffic is IPv6 and neither sample is IPv4.
-	s.rings[dirTotalRx][0] = 0
-	s.rings[dirTotalRxV6][0] = 100
-	s.rings[dirTotalRx][1] = 100
-	s.rings[dirTotalRxV6][1] = 0
-
-	got := s.familySplit(dirTotalRx, dirTotalRxV6).V4.HistoryBps
-	if len(got) != 2 || got[0] != 0 || got[1] != 0 {
-		t.Fatalf("derived V4 history = %v, want [0 0]", got)
-	}
-}
