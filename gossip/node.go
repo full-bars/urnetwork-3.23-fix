@@ -398,6 +398,8 @@ type Node struct {
 	// takes the status lock.
 	dialCount             atomic.Int64
 	dialStats             dialCounters
+	dialFailureLock       sync.Mutex
+	dialFailureClasses    map[peer.ID]string
 	messagesAccepted      atomic.Uint64
 	applyErrors           atomic.Uint64
 	lastAcceptedUnixMilli atomic.Int64
@@ -542,6 +544,7 @@ func NewNode(ctx context.Context, settings *NodeSettings) (*Node, error) {
 	// a peer that goes away should be replaced without waiting out the round
 	self.host.Network().Notify(&network.NotifyBundle{
 		ConnectedF: func(_ network.Network, conn network.Conn) {
+			self.noteDialClass(conn.RemotePeer(), "")
 			self.recordPeerEvent(conn, "connect")
 		},
 		DisconnectedF: func(_ network.Network, conn network.Conn) {
@@ -1147,6 +1150,29 @@ func (self *Node) peer() {
 	wg.Wait()
 }
 
+func (self *Node) noteDialClass(id peer.ID, class string) bool {
+	self.dialFailureLock.Lock()
+	defer self.dialFailureLock.Unlock()
+	if class == "" {
+		delete(self.dialFailureClasses, id)
+		return false
+	}
+	if self.dialFailureClasses == nil {
+		self.dialFailureClasses = make(map[peer.ID]string)
+	}
+	if self.dialFailureClasses[id] == class {
+		return false
+	}
+	if len(self.dialFailureClasses) >= 1024 {
+		for old := range self.dialFailureClasses {
+			delete(self.dialFailureClasses, old)
+			break
+		}
+	}
+	self.dialFailureClasses[id] = class
+	return true
+}
+
 func (self *Node) connectPeer(addrInfo peer.AddrInfo) {
 	ctx, cancel := context.WithTimeout(self.ctx, self.settings.DialTimeout)
 	defer cancel()
@@ -1157,7 +1183,9 @@ func (self *Node) connectPeer(addrInfo peer.AddrInfo) {
 	// peer first: Connect adds back the addresses this round chose.
 	self.host.Peerstore().ClearAddrs(addrInfo.ID)
 	err := self.host.Connect(ctx, addrInfo)
-	if class := self.dialStats.recordResult(err); class != "" {
+	class := self.dialStats.recordResult(err)
+	first := self.noteDialClass(addrInfo.ID, class)
+	if class != "" {
 		self.eventRing().Record(Event{
 			Time:      self.now(),
 			Kind:      "dial",
@@ -1166,10 +1194,8 @@ func (self *Node) connectPeer(addrInfo peer.AddrInfo) {
 			Reason:    class,
 		})
 	}
-	if err != nil {
-		if self.log.V(1).Enabled() {
-			self.log.Infof("[gossip]connect %s err = %s\n", addrInfo.ID, err)
-		}
+	if err != nil && (first || self.log.V(1).Enabled()) {
+		self.log.Infof("[gossip]connect %s class=%s err = %s\n", addrInfo.ID, class, err)
 	}
 }
 
