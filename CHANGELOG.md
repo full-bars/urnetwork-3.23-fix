@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Gossip peering skips extender addresses in dial backoff and reports backoff, unavailable addresses and gate denials separately.
+
 - **Systemd lingering.** The installer tries to enable lingering for the service user and reports its final state. Status, update and restart warn when it is off. Auto-start refuses to enable the user unit when it is off.
 
 ### Added

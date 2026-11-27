@@ -424,4 +424,4 @@ When extender discovery runs the gossip mesh, dial metrics report outgoing peeri
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `urnet_gossip_dial_attempts_total` | counter | | Outgoing gossip peering calls since the role started |
-| `urnet_gossip_dial_failures_total` | counter | `class` | Failed outgoing gossip peering calls by error class (`timeout`, `refused`, `canceled`, `other`) |
+| `urnet_gossip_dial_failures_total` | counter | `class` | Failed outgoing gossip peering calls by error class (`timeout`, `refused`, `canceled`, `backoff`, `no_addrs`, `gated`, `other`) |
