@@ -327,3 +327,65 @@ func TestSnapshotPacketRates(t *testing.T) {
 		t.Fatalf("packet rates: %+v", got)
 	}
 }
+
+func TestFamilySplitReconcilesSameProxyCatchUp(t *testing.T) {
+	s := newDirectionSampler()
+	s.sample(map[string]directionLanes{"p": {}}, snapT0)
+	s.sample(map[string]directionLanes{"p": {totalRxV6: 100}}, snapT0.Add(time.Second))
+	s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 100}}, snapT0.Add(2*time.Second))
+
+	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
+	if len(got) != 2 || got[0] != 0 || got[1] != 0 {
+		t.Fatalf("derived V4 history = %v, want [0 0]", got)
+	}
+}
+
+func TestFamilySplitReconcilesBytesAcrossUnequalIntervals(t *testing.T) {
+	s := newDirectionSampler()
+	s.sample(map[string]directionLanes{"p": {}}, snapT0)
+	s.sample(map[string]directionLanes{"p": {totalRxV6: 100}}, snapT0.Add(time.Second))
+	s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 100}}, snapT0.Add(3*time.Second))
+	s.sample(map[string]directionLanes{"p": {totalRx: 150, totalRxV6: 100}}, snapT0.Add(4*time.Second))
+
+	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
+	if len(got) != 3 || got[0] != 0 || got[1] != 0 || got[2] != 50 {
+		t.Fatalf("derived V4 history = %v, want [0 0 50]", got)
+	}
+}
+
+func TestFamilySplitDoesNotChargeDebtToAnotherProxy(t *testing.T) {
+	s := newDirectionSampler()
+	s.sample(map[string]directionLanes{"p": {}, "q": {}}, snapT0)
+	s.sample(map[string]directionLanes{"p": {totalRxV6: 100}, "q": {}}, snapT0.Add(time.Second))
+	// p leaves before its base catches up; q's own IPv4 bytes must not pay p's debt.
+	s.sample(map[string]directionLanes{"q": {totalRx: 100}}, snapT0.Add(2*time.Second))
+
+	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
+	if len(got) != 2 || got[0] != 0 || got[1] != 100 {
+		t.Fatalf("derived V4 history = %v, want [0 100]", got)
+	}
+}
+
+func TestFamilySplitKeepsReconciledSampleAfterRingRollover(t *testing.T) {
+	s := newDirectionSampler()
+	s.sample(map[string]directionLanes{"p": {}}, snapT0)
+	s.sample(map[string]directionLanes{"p": {totalRxV6: 100}}, snapT0.Add(time.Second))
+	s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 100}}, snapT0.Add(2*time.Second))
+	now := snapT0.Add(2 * time.Second)
+	for i := 0; i < snapshotRingSize; i++ {
+		now = now.Add(time.Second)
+		s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 100}}, now)
+	}
+
+	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
+	if len(got) != snapshotRingSize {
+		t.Fatalf("history length = %d, want %d", len(got), snapshotRingSize)
+	}
+	// The catch-up sample was the second recorded sample and has been evicted
+	// with the deficit, but no later sample may turn that debt into IPv4.
+	for i, v := range got {
+		if v != 0 {
+			t.Fatalf("history[%d] = %d, want 0", i, v)
+		}
+	}
+}

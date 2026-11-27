@@ -501,6 +501,12 @@ type directionLanes struct {
 	totalRxV6, totalTxV6       uint64
 }
 
+// familyDebt tracks IPv6 bytes observed before the matching base bytes for one
+// proxy, per quantity. It is cleared when that proxy leaves the sampler.
+type familyDebt struct {
+	billableRx, billableTx, totalRx, totalTx uint64
+}
+
 // The directional lanes, in sampler order: billable rx, billable tx, total rx,
 // total tx, plus their IPv6 shares.
 const (
@@ -514,6 +520,10 @@ const (
 	dirBillableTxV6
 	dirTotalRxV6
 	dirTotalTxV6
+	dirBillableRxV4
+	dirBillableTxV4
+	dirTotalRxV4
+	dirTotalTxV4
 	directionLaneCount
 )
 
@@ -529,6 +539,9 @@ type directionSampler struct {
 	rings    [directionLaneCount][snapshotRingSize]int64
 	next     int // slot the next sample is written to
 	count    int // valid samples, capped at snapshotRingSize
+	// familyDebt holds IPv6 bytes observed before their base bytes, per proxy.
+	// Guarded by mu; entries disappear when a proxy leaves the sampler.
+	familyDebt map[string]familyDebt
 	// session keeps every delta counted since the provider started, per lane.
 	session [directionLaneCount]uint64
 	// recorded counts every sample ever written to the rings, so the newest
@@ -549,47 +562,70 @@ func (s *directionSampler) sample(cur map[string]directionLanes, now time.Time) 
 
 	first := s.prev == nil
 	var deltas [directionLaneCount]uint64
+	// A counter that went down (a respawned proxy starts from zero) adds
+	// nothing for this tick; uint64 subtraction would wrap instead.
+	delta := func(cur, prev uint64) uint64 {
+		if cur < prev {
+			return 0
+		}
+		return cur - prev
+	}
+	// Match this proxy's IPv6 bytes against its own base bytes. A deficit left
+	// by an earlier tick is carried only for this proxy and cleared when it
+	// leaves, so another proxy's traffic can never pay it.
+	pay := func(base, v6 uint64, debt *uint64) uint64 {
+		need := v6 + *debt
+		if need < v6 {
+			need = ^uint64(0)
+		}
+		if base >= need {
+			*debt = 0
+			return base - need
+		}
+		*debt = need - base
+		return 0
+	}
+	if s.familyDebt == nil {
+		s.familyDebt = map[string]familyDebt{}
+	}
 	for k, v := range cur {
 		p, ok := s.prev[k]
 		if !ok {
 			continue
 		}
-		// A counter that went down (a respawned proxy starts from zero) adds
-		// nothing for this tick; uint64 subtraction would wrap instead.
-		if v.billableRx >= p.billableRx {
-			deltas[dirBillableRx] += v.billableRx - p.billableRx
-		}
-		if v.billableTx >= p.billableTx {
-			deltas[dirBillableTx] += v.billableTx - p.billableTx
-		}
-		if v.totalRx >= p.totalRx {
-			deltas[dirTotalRx] += v.totalRx - p.totalRx
-		}
-		if v.totalTx >= p.totalTx {
-			deltas[dirTotalTx] += v.totalTx - p.totalTx
-		}
-		if v.packetRx >= p.packetRx {
-			deltas[dirPacketRx] += v.packetRx - p.packetRx
-		}
-		if v.packetTx >= p.packetTx {
-			deltas[dirPacketTx] += v.packetTx - p.packetTx
-		}
-		if v.billableRxV6 >= p.billableRxV6 {
-			deltas[dirBillableRxV6] += v.billableRxV6 - p.billableRxV6
-		}
-		if v.billableTxV6 >= p.billableTxV6 {
-			deltas[dirBillableTxV6] += v.billableTxV6 - p.billableTxV6
-		}
-		if v.totalRxV6 >= p.totalRxV6 {
-			deltas[dirTotalRxV6] += v.totalRxV6 - p.totalRxV6
-		}
-		if v.totalTxV6 >= p.totalTxV6 {
-			deltas[dirTotalTxV6] += v.totalTxV6 - p.totalTxV6
-		}
+		bRx := delta(v.billableRx, p.billableRx)
+		bTx := delta(v.billableTx, p.billableTx)
+		tRx := delta(v.totalRx, p.totalRx)
+		tTx := delta(v.totalTx, p.totalTx)
+		v6BRx := delta(v.billableRxV6, p.billableRxV6)
+		v6BTx := delta(v.billableTxV6, p.billableTxV6)
+		v6TRx := delta(v.totalRxV6, p.totalRxV6)
+		v6TTx := delta(v.totalTxV6, p.totalTxV6)
+		deltas[dirBillableRx] += bRx
+		deltas[dirBillableTx] += bTx
+		deltas[dirTotalRx] += tRx
+		deltas[dirTotalTx] += tTx
+		deltas[dirPacketRx] += delta(v.packetRx, p.packetRx)
+		deltas[dirPacketTx] += delta(v.packetTx, p.packetTx)
+		deltas[dirBillableRxV6] += v6BRx
+		deltas[dirBillableTxV6] += v6BTx
+		deltas[dirTotalRxV6] += v6TRx
+		deltas[dirTotalTxV6] += v6TTx
+		d := s.familyDebt[k]
+		deltas[dirBillableRxV4] += pay(bRx, v6BRx, &d.billableRx)
+		deltas[dirBillableTxV4] += pay(bTx, v6BTx, &d.billableTx)
+		deltas[dirTotalRxV4] += pay(tRx, v6TRx, &d.totalRx)
+		deltas[dirTotalTxV4] += pay(tTx, v6TTx, &d.totalTx)
+		s.familyDebt[k] = d
 	}
 	next := make(map[string]directionLanes, len(cur))
 	for k, v := range cur {
 		next[k] = v
+	}
+	for k := range s.familyDebt {
+		if _, ok := next[k]; !ok {
+			delete(s.familyDebt, k)
+		}
 	}
 	elapsed := now.Sub(s.prevTime).Seconds()
 	s.prev = next
@@ -667,37 +703,24 @@ func (s *directionSampler) packetRate(lane int) SnapshotPacketRate {
 	return SnapshotPacketRate{NowPps: h[len(h)-1], Avg1mPps: avgTail(h, 60), Avg5mPps: avgTail(h, 300), HistoryPps: h}
 }
 
-// familySplit builds one quantity's V4 and V6 rates. V6 is its own lane. V4 is
-// the base lane minus the V6 lane sample by sample, clamped at zero: the base
-// and the V6 counter are separate atomics, so a tick can read the V6 delta one
-// sample ahead of the base it belongs to and leave a small negative difference.
-func (s *directionSampler) familySplit(lane, laneV6 int) SnapshotFamilySplit {
-	base := s.history(lane)
-	v6 := s.history(laneV6)
-	v4 := make([]int64, len(base))
-	for i := range base {
-		d := base[i]
-		if i < len(v6) {
-			d -= v6[i]
-		}
-		if d < 0 {
-			d = 0
-		}
-		v4[i] = d
-	}
+// familySplit builds one quantity's V4 and V6 rates. V4 is reconciled from raw
+// byte deltas in sample() while proxy identity is still available, so a base
+// counter catching up cannot steal another proxy's traffic and a per-proxy
+// deficit never survives that proxy leaving.
+func (s *directionSampler) familySplit(v4Lane, v6Lane int) SnapshotFamilySplit {
 	return SnapshotFamilySplit{
-		V4: s.direction(lane, v4),
-		V6: s.direction(laneV6, v6),
+		V4: s.direction(v4Lane, s.history(v4Lane)),
+		V6: s.direction(v6Lane, s.history(v6Lane)),
 	}
 }
 
 // familyBlock builds the IP family split of the four directional quantities.
 func (s *directionSampler) familyBlock() SnapshotTrafficFamilies {
 	return SnapshotTrafficFamilies{
-		BillableRx: s.familySplit(dirBillableRx, dirBillableRxV6),
-		BillableTx: s.familySplit(dirBillableTx, dirBillableTxV6),
-		TotalRx:    s.familySplit(dirTotalRx, dirTotalRxV6),
-		TotalTx:    s.familySplit(dirTotalTx, dirTotalTxV6),
+		BillableRx: s.familySplit(dirBillableRxV4, dirBillableRxV6),
+		BillableTx: s.familySplit(dirBillableTxV4, dirBillableTxV6),
+		TotalRx:    s.familySplit(dirTotalRxV4, dirTotalRxV6),
+		TotalTx:    s.familySplit(dirTotalTxV4, dirTotalTxV6),
 	}
 }
 
