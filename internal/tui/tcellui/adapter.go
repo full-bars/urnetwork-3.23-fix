@@ -350,6 +350,8 @@ type screen struct {
 	keyBarrier    atomic.Pointer[keychanBarrier]
 	keyBarrierSeq atomic.Uint64
 	pumpDone      chan struct{}
+	finiDone      chan struct{}
+	closing       atomic.Bool
 	s             tcell.Screen
 	tty           *suspendTty
 	events        chan Event
@@ -421,7 +423,7 @@ func Wrap(s tcell.Screen) (Screen, error) {
 		return nil, err
 	}
 	s.EnableMouse()
-	self := &screen{s: s, events: make(chan Event, 16), done: make(chan struct{}), pumpDone: make(chan struct{})}
+	self := &screen{s: s, events: make(chan Event, 16), done: make(chan struct{}), pumpDone: make(chan struct{}), finiDone: make(chan struct{})}
 	if tty, ok := s.Tty(); ok {
 		if st, ok := tty.(*suspendTty); ok {
 			self.tty = st
@@ -564,7 +566,9 @@ func (self *screen) Close() {
 			self.drainBeforeDisengage()
 			defer self.tty.endSuspend()
 		}
+		self.closing.Store(true)
 		self.s.Fini()
+		close(self.finiDone)
 		close(self.done)
 	})
 }
@@ -631,6 +635,13 @@ func (self *screen) pump() {
 	for {
 		ev := self.s.PollEvent()
 		if ev == nil {
+			if self.closing.Load() {
+				select {
+				case <-self.finiDone:
+				default:
+					continue
+				}
+			}
 			self.send(Event{Kind: EventQuit})
 			return
 		}
