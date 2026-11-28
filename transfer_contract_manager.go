@@ -879,7 +879,17 @@ func (self *ContractManager) IsProvidePaused() bool {
 	return self.providePaused
 }
 
+// provideFrame builds the provide that registers the current provide keys, and
+// advertises whether this client serves post-quantum encryption sessions
+// (`EncryptionSessionManager.ServesPostQuantumEncryption`), which the platform
+// records with the provide.
 func (self *ContractManager) provideFrame() (*protocol.Frame, error) {
+	// read before taking the manager lock: the session manager has its own
+	postQuantumEncryption := false
+	if encryptionSessionManager := self.client.EncryptionSessionManager(); encryptionSessionManager != nil {
+		postQuantumEncryption = encryptionSessionManager.ServesPostQuantumEncryption()
+	}
+
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -904,7 +914,8 @@ func (self *ContractManager) provideFrame() (*protocol.Frame, error) {
 		}
 
 		provide = &protocol.Provide{
-			Keys: provideKeys,
+			Keys:                  provideKeys,
+			PostQuantumEncryption: postQuantumEncryption,
 		}
 	} else {
 		provideKeys := []*protocol.ProvideKey{}
@@ -923,7 +934,8 @@ func (self *ContractManager) provideFrame() (*protocol.Frame, error) {
 		}
 
 		provide = &protocol.Provide{
-			Keys: provideKeys,
+			Keys:                  provideKeys,
+			PostQuantumEncryption: postQuantumEncryption,
 		}
 	}
 	provideFrame, err := ToFrame(provide, self.settings.ProtocolVersion)

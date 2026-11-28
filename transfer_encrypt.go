@@ -18,7 +18,9 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"os"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2781,6 +2783,177 @@ func (self *EncryptionSessionManager) Settings() *EncryptionSettings {
 // expected for them.
 func (self *EncryptionSessionManager) RequireEncryption() bool {
 	return self.settings != nil && self.settings.Mode == EncryptionModeRequired
+}
+
+// ServesPostQuantumEncryption reports whether this manager answers a peer that
+// requires a post-quantum session: the session layer is on, the identity such a
+// peer verifies the session against is set up (the published TLS certificate,
+// signed with the client identity key), and the receiver-role TLS config offers
+// the X25519MLKEM768 hybrid to a peer it can reach TLS 1.3 with. Every
+// `Provide` the contract manager sends advertises it. It is a claim for the
+// platform's records, never for admission: the requiring peer still verifies
+// every session it seals with.
+func (self *EncryptionSessionManager) ServesPostQuantumEncryption() bool {
+	if self.settings == nil || self.settings.Mode == EncryptionModeOff || self.clientKeyManager == nil {
+		return false
+	}
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	if self.serverTlsConfig == nil || len(self.selfCertPem) == 0 {
+		return false
+	}
+	// X25519MLKEM768 is a TLS 1.3 key exchange, so a config whose version
+	// interval excludes 1.3 cannot negotiate it whatever its curve list names.
+	// A zero bound is the crypto/tls default for that end of the interval (a
+	// TLS 1.2 minimum and a TLS 1.3 maximum), which leaves 1.3 available.
+	if 0 < self.serverTlsConfig.MinVersion && tls.VersionTLS13 < self.serverTlsConfig.MinVersion {
+		return false
+	}
+	if 0 < self.serverTlsConfig.MaxVersion && self.serverTlsConfig.MaxVersion < tls.VersionTLS13 {
+		return false
+	}
+	// GetConfigForClient can replace this config for each connection. The
+	// callback's config decides the accepted key exchanges, so the list on
+	// this config cannot support a claim for callback-driven configurations.
+	if self.serverTlsConfig.GetConfigForClient != nil {
+		return false
+	}
+	// A certificate callback can present an identity other than the first
+	// static chain published in the contract, which the peer would reject.
+	if self.serverTlsConfig.GetCertificate != nil {
+		return false
+	}
+	// A static list of several chains is in the same position: crypto/tls
+	// selects one per handshake by SNI, and the contract publishes only the
+	// first, so a peer that names another chain is served an unpublished
+	// identity.
+	if 1 < len(self.serverTlsConfig.Certificates) {
+		return false
+	}
+	// an empty list is the crypto/tls default, which this build resolves per
+	// handshake and which GODEBUG=tlsmlkem=0 shortens; an explicit list is
+	// taken as given either way
+	curves := self.serverTlsConfig.CurvePreferences
+	if 0 < len(curves) {
+		return slices.Contains(curves, tls.X25519MLKEM768)
+	}
+	return tlsDefaultReceiverOffersHybrid()
+}
+
+// tlsDefaultProbeTimeout bounds the loopback handshake that measures the
+// crypto/tls default key exchange list. The handshake runs over an in-memory
+// pipe and completes in well under a millisecond; the deadline only keeps a
+// stuck probe from blocking the claim.
+const tlsDefaultProbeTimeout = time.Second
+
+// tlsDefaultProbeRetryInterval paces the measurement after a probe that did not
+// complete. The interval keeps a probe that cannot complete from running on
+// every claim while still letting the answer follow the process once the local
+// condition clears.
+const tlsDefaultProbeRetryInterval = 30 * time.Second
+
+var (
+	tlsDefaultReceiverHybridLock     sync.Mutex
+	tlsDefaultReceiverHybridGodebug  string
+	tlsDefaultReceiverHybridOffers   bool
+	tlsDefaultReceiverHybridMeasured bool
+	tlsDefaultReceiverHybridRetryAt  time.Time
+)
+
+// tlsDefaultHybridProbe is replaceable so tests can force the incomplete path.
+var tlsDefaultHybridProbe = measureTlsDefaultReceiverHybrid
+
+// tlsDefaultReceiverOffersHybrid reports whether an empty `CurvePreferences`,
+// the crypto/tls default key exchange list, offers the X25519MLKEM768 hybrid to
+// a TLS 1.3 receiver in this process. crypto/tls resolves that list at handshake
+// time and leaves the hybrid out of it under `GODEBUG=tlsmlkem=0`, so the
+// answer is measured with a loopback handshake rather than restated here. A
+// completed measurement is kept per `GODEBUG` value, the only input to the
+// default list that can change while the process runs, under the value the
+// handshake ran under.
+//
+// A probe that does not complete says nothing about the list, so its answer is
+// not kept. The conservative false holds for `tlsDefaultProbeRetryInterval`
+// and the list is measured again after that, so a deadline that fired during a
+// pause in the process does not decide the answer for the life of the process.
+func tlsDefaultReceiverOffersHybrid() bool {
+	tlsDefaultReceiverHybridLock.Lock()
+	defer tlsDefaultReceiverHybridLock.Unlock()
+	// the setting is read under this lock and again once the probe returns, so
+	// a measurement is kept only under a value it can be attributed to
+	godebug := os.Getenv("GODEBUG")
+	if tlsDefaultReceiverHybridMeasured && tlsDefaultReceiverHybridGodebug == godebug {
+		return tlsDefaultReceiverHybridOffers
+	}
+	if tlsDefaultReceiverHybridGodebug == godebug && time.Now().Before(tlsDefaultReceiverHybridRetryAt) {
+		// the last probe under this setting did not complete
+		return false
+	}
+	offers, measured := tlsDefaultHybridProbe()
+	if os.Getenv("GODEBUG") != godebug {
+		// the setting changed while the handshake ran, so the result belongs to
+		// neither value and is not kept
+		measured = false
+	}
+	tlsDefaultReceiverHybridGodebug = godebug
+	if measured {
+		tlsDefaultReceiverHybridOffers = offers
+		tlsDefaultReceiverHybridMeasured = true
+		tlsDefaultReceiverHybridRetryAt = time.Time{}
+		return offers
+	}
+	tlsDefaultReceiverHybridOffers = false
+	tlsDefaultReceiverHybridMeasured = false
+	tlsDefaultReceiverHybridRetryAt = time.Now().Add(tlsDefaultProbeRetryInterval)
+	return false
+}
+
+// measureTlsDefaultReceiverHybrid runs one loopback TLS 1.3 handshake against a
+// receiver that leaves its curve list at the default, with a client that offers
+// only the hybrid. The hybrid can be negotiated only if the receiver's default
+// list carries it. A completed handshake reports what it negotiated. A peer
+// that answers with an alert has taken part in the exchange and declined the
+// hybrid, which is an answer; a local failure such as an expired deadline or a
+// closed pipe leaves the answer unknown.
+func measureTlsDefaultReceiverHybrid() (offers bool, measured bool) {
+	cert, err := generateSequenceTlsCertificate()
+	if err != nil {
+		return false, false
+	}
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+	deadline := time.Now().Add(tlsDefaultProbeTimeout)
+	serverConn.SetDeadline(deadline)
+	clientConn.SetDeadline(deadline)
+	server := tls.Server(serverConn, &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
+		MaxVersion:   tls.VersionTLS13,
+	})
+	// the client names the hybrid explicitly, which crypto/tls takes as given,
+	// so the receiver's default list decides the outcome
+	client := tls.Client(clientConn, &tls.Config{
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS13,
+		MaxVersion:         tls.VersionTLS13,
+		CurvePreferences:   []tls.CurveID{tls.X25519MLKEM768},
+	})
+	go func() {
+		_ = server.Handshake()
+	}()
+	if err := client.Handshake(); err != nil {
+		return false, tlsHandshakeDeclined(err)
+	}
+	return client.ConnectionState().CurveID == tls.X25519MLKEM768, true
+}
+
+// tlsHandshakeDeclined reports whether a handshake error is an alert the peer
+// sent. A peer alert ends an exchange the peer took part in; any other error is
+// a local failure that leaves the outcome unmeasured.
+func tlsHandshakeDeclined(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "remote error"
 }
 
 // SendNoSession reports whether a SendSequence to `destinationId` should run
