@@ -99,17 +99,24 @@ func applyPprofMode(value string) error {
 	tlog("[profile] diagnostics on %s (loopback only): /debug/pprof/goroutine?debug=1, /debug/pprof/threadcreate?debug=1, /debug/pprof/heap\n", bound)
 	if _, fellBack := managedPprof.usingFallback(); fellBack {
 		tlog("[profile] %s was in use, so diagnostics use %s until it is free (a hotswap parent holds it while it drains)\n", want, bound)
-		go connect.HandleError(func() { retryPprofPort(pprofRetrySeq, want) })
+		// the retry takes its values here, under the mutex; a later setting
+		// change ends this retry through the sequence instead of retiming it
+		seq := pprofRetrySeq
+		retryEvery, retryFor := pprofRetryEvery, pprofRetryFor
+		go connect.HandleError(func() { retryPprofPort(seq, want, retryEvery, retryFor) })
 	}
 	return nil
 }
 
 // retryPprofPort moves the listener onto its wanted port once the holder of it
 // (usually the hotswap parent) has exited. It stops when the setting changes.
-func retryPprofPort(seq uint64, want string) {
-	ctx, cancel := context.WithTimeout(context.Background(), pprofRetryFor)
+// The timing and the sequence are passed in because this goroutine can start
+// after applyPprofMode has returned, so a read of the package variables here
+// would not be ordered with a later write to them.
+func retryPprofPort(seq uint64, want string, retryEvery, retryFor time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), retryFor)
 	defer cancel()
-	ticker := time.NewTicker(pprofRetryEvery)
+	ticker := time.NewTicker(retryEvery)
 	defer ticker.Stop()
 	for {
 		select {
