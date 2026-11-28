@@ -19,6 +19,13 @@ func neonProxyCellStyle(th tui.Theme, state, bucket uint8) tui.Style {
 	case connect.ProxyCellParked:
 		return th.Dim
 	}
+	// Use the terminal palette for every bucket on 16-color themes.
+	if th.OK.FG.Kind == tui.Color16 {
+		if bucket < 4 {
+			return tui.Style{FG: tui.Ansi(2)}
+		}
+		return tui.Style{FG: th.OK.FG}
+	}
 	// Up: green ramp from dim to the neon green.
 	ramp := []tui.Color{
 		tui.Xterm(22), tui.Xterm(28), tui.Xterm(34), tui.Xterm(40),
