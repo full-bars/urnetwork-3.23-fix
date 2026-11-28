@@ -185,3 +185,18 @@ func TestDemoSourceProducesValidSnapshotsThatMove(t *testing.T) {
 		t.Fatal("demo output must be a pure function of the clock")
 	}
 }
+
+// An unknown --theme is reported before the terminal is taken over, so the
+// error does not leave the terminal in raw mode on the alternate screen.
+func TestCmdTopRejectsAnUnknownThemeBeforeOpeningTheScreen(t *testing.T) {
+	_, opened := stubTopCmd(t, true, []Provider{{Unit: "a", Running: true}}, nil)
+	t.Setenv("HOME", t.TempDir())
+
+	err := cmdTop([]string{"--theme", "no-such-theme"})
+	if err == nil || !strings.Contains(err.Error(), "unknown theme") {
+		t.Fatalf("an unknown theme should be rejected, got %v", err)
+	}
+	if *opened != 0 {
+		t.Fatalf("the screen must not be opened for a rejected theme, opened=%d", *opened)
+	}
+}

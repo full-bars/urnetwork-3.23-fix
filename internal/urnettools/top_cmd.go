@@ -72,10 +72,6 @@ func cmdTop(args []string) error {
 		}
 	}
 
-	scr, err := topOpenScreen()
-	if err != nil {
-		return fmt.Errorf("cannot open the terminal for top: %w (use `urnet-tools status` instead)", err)
-	}
 	// SIGINT and SIGTERM end the loop through the context, so the terminal is
 	// restored by runTop's own exit path rather than by the signal killing the
 	// process mid-frame. In raw mode Ctrl-C arrives as a key, not a signal, and
@@ -125,6 +121,13 @@ func cmdTop(args []string) error {
 
 	m.copyOnQuit, m.copyPlain = copyOnQuit, plain
 	m.enableLogo(plain, copyOnQuit)
+	// The screen opens only after every check that can still fail, so an
+	// early return never leaves the terminal in raw mode. From here runTop
+	// owns it and closes it on every path.
+	scr, err := topOpenScreen()
+	if err != nil {
+		return fmt.Errorf("cannot open the terminal for top: %w (use `urnet-tools status` instead)", err)
+	}
 	m.clip = newTopClipboard(scr)
 	src := topSourceFn()
 	if demo {
