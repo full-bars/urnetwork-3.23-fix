@@ -164,6 +164,7 @@ type topModel struct {
 
 	conn      topConn
 	snap      *NodeSnapshot // last good snapshot of the current provider
+	snapAt    time.Time     // when snap was accepted, for a reader dating its samples
 	downSince time.Time
 	nextRetry time.Time
 	lastErr   string
@@ -562,6 +563,7 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 	}
 	m.conn = topConnected
 	m.snap = snap
+	m.snapAt = now
 	// The provider computes its own one and five minute averages, so the peaks
 	// come from the same figures the rows above them show.
 	{

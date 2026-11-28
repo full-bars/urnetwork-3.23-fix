@@ -61,9 +61,17 @@ func (m *topModel) familyData() (v4Up, v6Up, v4Down, v6Down []float64, newest ti
 		interval = time.Duration(m.snap.Rate.HistoryIntervalSeconds * float64(time.Second))
 	}
 	f := m.snap.Traffic.Directions.Families
+	// Date the samples from the snapshot that carried them: while that snapshot
+	// is retained its history ages out of the window, and the next snapshot
+	// dates its samples afresh. A model handed a snapshot directly (the demo and
+	// the golden fixtures) has no acceptance time and keeps the clock.
+	newest = m.snapAt
+	if newest.IsZero() {
+		newest = m.now()
+	}
 	return f.BillableTx.V4.HistoryBps, f.BillableTx.V6.HistoryBps,
 		f.BillableRx.V4.HistoryBps, f.BillableRx.V6.HistoryBps,
-		m.now().Truncate(interval), interval, true
+		newest.Truncate(interval), interval, true
 }
 
 // familyShare is the whole-percentage split of two byte figures over the window.

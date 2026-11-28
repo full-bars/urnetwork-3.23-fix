@@ -290,6 +290,44 @@ func TestTopFamilyPageAfterADecrease(t *testing.T) {
 	}
 }
 
+// A retained snapshot keeps the time it was accepted: its samples age out of
+// the window while it is the last one, and the next snapshot dates its samples
+// afresh. Dating them from the clock instead reports expired traffic as current.
+func TestTopFamilySampleTimeHoldsBetweenSnapshots(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
+	m.apply(0, familyFixture(t), nil)
+
+	v4Up, v6Up, v4Down, v6Down, newest, interval, ok := m.familyData()
+	if !ok {
+		t.Fatal("family data missing after a snapshot")
+	}
+	if want := topBase.Truncate(interval); !newest.Equal(want) {
+		t.Fatalf("sample time = %v, want the snapshot's %v", newest, want)
+	}
+	if got := familyShareTextWindow(v4Up, v6Up, v4Down, v6Down, newest, m.now(), interval, remoteDefaultWindow); got != "IPv4 78%  IPv6 22%" {
+		t.Fatalf("share right after the snapshot = %q", got)
+	}
+
+	// Two minutes later the same snapshot is still the last one. Its samples
+	// are two minutes old, so the one-minute window has nothing to state.
+	clock.Advance(2 * time.Minute)
+	v4Up, v6Up, v4Down, v6Down, held, interval, _ := m.familyData()
+	if !held.Equal(newest) {
+		t.Fatalf("sample time moved to %v while the same snapshot was retained", held)
+	}
+	if got := familyShareTextWindow(v4Up, v6Up, v4Down, v6Down, held, m.now(), interval, remoteDefaultWindow); got != "IPv4 0%  IPv6 0%  idle" {
+		t.Fatalf("retained samples did not age out: share = %q", got)
+	}
+
+	// A new snapshot dates its samples at the moment it was accepted.
+	clock.Advance(time.Second)
+	m.apply(0, familyFixture(t), nil)
+	if _, _, _, _, fresh, interval, _ := m.familyData(); !fresh.Equal(m.now().Truncate(interval)) {
+		t.Fatalf("sample time after a new snapshot = %v, want %v", fresh, m.now().Truncate(interval))
+	}
+}
+
 func TestFamilyShareUsesChartWindow(t *testing.T) {
 	// 600 one-second samples: IPv4 fills all but the newest minute, IPv6 fills
 	// the minute the chart shows. The whole-history share is 90/10; the share
