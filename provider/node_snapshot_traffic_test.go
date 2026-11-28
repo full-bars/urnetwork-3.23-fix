@@ -141,10 +141,12 @@ func TestDirectionSamplerSkipsDecreases(t *testing.T) {
 // against the provider's clock, not the socket round trip.
 func TestLiveTrafficSample(t *testing.T) {
 	at := snapT0.Add(90 * time.Minute)
-	got := liveTrafficSample(at, func() (billableRx, billableTx, totalRx, totalTx uint64) {
-		return 300, 400, 900, 1200
-	}, func() (uint64, uint64) { return 5, 7 }, func() connect.ProxyBandwidthFamily {
-		return connect.ProxyBandwidthFamily{BillableRx: 10, BillableTx: 12, TotalRx: 20, TotalTx: 30}
+	got := liveTrafficSample(at, func() connect.ProxyBandwidthTraffic {
+		return connect.ProxyBandwidthTraffic{
+			BillableRx: 300, BillableTx: 400, TotalRx: 900, TotalTx: 1200,
+			BillableRxPackets: 5, BillableTxPackets: 7,
+			V6: connect.ProxyBandwidthFamily{BillableRx: 10, BillableTx: 12, TotalRx: 20, TotalTx: 30},
+		}
 	})
 	if got.AtUnixNano != at.UnixNano() {
 		t.Fatalf("timestamp = %d, want %d", got.AtUnixNano, at.UnixNano())
@@ -158,6 +160,58 @@ func TestLiveTrafficSample(t *testing.T) {
 	if got.BillableRxBytesV6 != 10 || got.BillableTxBytesV6 != 12 ||
 		got.TotalRxBytesV6 != 20 || got.TotalTxBytesV6 != 30 {
 		t.Fatalf("ipv6 counters = %+v", got)
+	}
+}
+
+// The traffic reply reads each proxy's base counter and IPv6 counter together.
+// The IPv6 credit writes both under the record's lock, and a reader that took
+// the base before the credit and the IPv6 counter after it would report IPv6
+// bytes above the matching base, so a client deriving IPv4 from the pair would
+// see a value below zero. This holds the credit mid-update, the way such a
+// reader would see it, and requires the reply to carry one pair or the other.
+func TestLiveTrafficSamplePairsBaseWithIPv6(t *testing.T) {
+	const index = 992712
+	connect.RegisterProxy(index, "traffic-pair-test", "traffic-pair-test")
+	bw := connect.RegisterProxyBandwidth(index)
+	t.Cleanup(func() { connect.UnregisterProxy(index) })
+
+	before := liveTrafficSample(snapT0, connect.ProxyBandwidthTrafficTotals)
+	beforeV4 := before.TotalRxBytes - before.TotalRxBytesV6
+
+	partial := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		bw.WithTrafficUpdate(func() {
+			bw.TotalRxV6.Add(100)
+			close(partial)
+			<-release
+			bw.TotalRx.Add(100)
+		})
+	}()
+	<-partial
+
+	started := make(chan struct{})
+	result := make(chan *LiveTraffic, 1)
+	go func() {
+		close(started)
+		result <- liveTrafficSample(snapT0, connect.ProxyBandwidthTrafficTotals)
+	}()
+	<-started
+	var observed *LiveTraffic
+	select {
+	case observed = <-result:
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	<-finished
+	if observed == nil {
+		observed = <-result
+	}
+	if v4 := observed.TotalRxBytes - observed.TotalRxBytesV6; v4 != beforeV4 {
+		t.Fatalf("the reply mixed a base from one moment with an IPv6 counter from another: ipv4 total = %d, want %d (reply base %d, ipv6 %d)",
+			v4, beforeV4, observed.TotalRxBytes, observed.TotalRxBytesV6)
 	}
 }
 

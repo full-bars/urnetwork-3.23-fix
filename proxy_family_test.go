@@ -49,6 +49,56 @@ func TestProxyBandwidthFamilyTotalsSumsV6(t *testing.T) {
 	}
 }
 
+// TestProxyBandwidthTrafficTotalsSums covers the aggregate behind one traffic
+// reply: every figure is the sum across the registry, the IPv6 lanes carry only
+// the IPv6 counters, and the one call agrees with the separate aggregates.
+func TestProxyBandwidthTrafficTotalsSums(t *testing.T) {
+	resetProxyHealthForTest()
+
+	if got := ProxyBandwidthTrafficTotals(); got != (ProxyBandwidthTraffic{}) {
+		t.Fatalf("empty registry = %+v, want all zero", got)
+	}
+
+	a := RegisterProxyBandwidth(1)
+	a.BillableRx.Store(80)
+	a.BillableRxV6.Store(20)
+	a.BillableTx.Store(150)
+	a.BillableTxV6.Store(10)
+	a.TotalRx.Store(100)
+	a.TotalRxV6.Store(30)
+	a.TotalTx.Store(200)
+	a.TotalTxV6.Store(50)
+	a.BillableRxPackets.Store(7)
+	a.BillableTxPackets.Store(9)
+
+	b := RegisterProxyBandwidth(2)
+	b.BillableRxV6.Store(5)
+	b.BillableTxV6.Store(6)
+	b.TotalRxV6.Store(7)
+	b.TotalTxV6.Store(8)
+	b.BillableRxPackets.Store(3)
+	b.BillableTxPackets.Store(4)
+
+	got := ProxyBandwidthTrafficTotals()
+	want := ProxyBandwidthTraffic{
+		BillableRx: 80, BillableTx: 150, TotalRx: 100, TotalTx: 200,
+		BillableRxPackets: 10, BillableTxPackets: 13,
+		V6: ProxyBandwidthFamily{BillableRx: 25, BillableTx: 16, TotalRx: 37, TotalTx: 58},
+	}
+	if got != want {
+		t.Fatalf("traffic totals = %+v, want %+v", got, want)
+	}
+
+	// The reply's figures agree with the separately published aggregates.
+	bRx, bTx, tRx, tTx := ProxyBandwidthDirectionTotals()
+	rxPackets, txPackets := ProxyBandwidthPacketTotals()
+	if got.BillableRx != bRx || got.BillableTx != bTx || got.TotalRx != tRx || got.TotalTx != tTx ||
+		got.BillableRxPackets != rxPackets || got.BillableTxPackets != txPackets ||
+		got.V6 != ProxyBandwidthFamilyTotals() {
+		t.Fatalf("traffic totals %+v disagree with the separate aggregates", got)
+	}
+}
+
 // TestProxyBandwidthFamilyCounterHoldsWhenProxyLeaves proves the monotonic
 // series keeps a departing proxy's bytes while the live series drops them.
 func TestProxyBandwidthFamilyCounterHoldsWhenProxyLeaves(t *testing.T) {

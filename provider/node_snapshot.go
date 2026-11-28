@@ -237,26 +237,25 @@ func carried(framesTx, framesRx, bytesTx, bytesRx uint64, up int64) bool {
 	return framesTx|framesRx|bytesTx|bytesRx != 0 || up != 0
 }
 
-// liveTrafficSample reads the counter sums at now.
-func liveTrafficSample(now time.Time, totals func() (billableRx, billableTx, totalRx, totalTx uint64), packets func() (uint64, uint64), families func() connect.ProxyBandwidthFamily) *LiveTraffic {
-	billableRx, billableTx, totalRx, totalTx := totals()
-	rxPackets, txPackets := packets()
-	f := families()
+// liveTrafficSample reads the counter sums at now. One call returns every figure
+// in the reply, so the byte, packet and IPv6 totals describe the same moment.
+func liveTrafficSample(now time.Time, totals func() connect.ProxyBandwidthTraffic) *LiveTraffic {
+	t := totals()
 	return &LiveTraffic{
 		AtUnixNano:        now.UnixNano(),
-		BillableBytes:     billableRx + billableTx,
-		TotalBytes:        totalRx + totalTx,
-		BillableRxBytes:   billableRx,
-		BillableTxBytes:   billableTx,
-		TotalRxBytes:      totalRx,
-		TotalTxBytes:      totalTx,
-		BillableRxPackets: rxPackets,
-		BillableTxPackets: txPackets,
+		BillableBytes:     t.BillableRx + t.BillableTx,
+		TotalBytes:        t.TotalRx + t.TotalTx,
+		BillableRxBytes:   t.BillableRx,
+		BillableTxBytes:   t.BillableTx,
+		TotalRxBytes:      t.TotalRx,
+		TotalTxBytes:      t.TotalTx,
+		BillableRxPackets: t.BillableRxPackets,
+		BillableTxPackets: t.BillableTxPackets,
 		Transports:        liveTransportsSample(connect.TransportModeStats(), h1ConnectionProcessStats.Snapshot()),
-		BillableRxBytesV6: f.BillableRx,
-		BillableTxBytesV6: f.BillableTx,
-		TotalRxBytesV6:    f.TotalRx,
-		TotalTxBytesV6:    f.TotalTx,
+		BillableRxBytesV6: t.V6.BillableRx,
+		BillableTxBytesV6: t.V6.BillableTx,
+		TotalRxBytesV6:    t.V6.TotalRx,
+		TotalTxBytesV6:    t.V6.TotalTx,
 	}
 }
 

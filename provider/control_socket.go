@@ -634,7 +634,10 @@ func handleControlRequest(state *controlState, req controlRequest) (response con
 		return controlResponse{OK: true, Snapshot: nodeSnapshots.Get()}
 
 	case "traffic":
-		return controlResponse{OK: true, Traffic: liveTrafficSample(time.Now(), connect.ProxyBandwidthDirectionTotals, connect.ProxyBandwidthPacketTotals, connect.ProxyBandwidthFamilyTotals)}
+		// One aggregate call for the whole reply: it reads each proxy's base
+		// and IPv6 counters as one pair, so the IPv4 figure the client derives
+		// cannot come from two different moments.
+		return controlResponse{OK: true, Traffic: liveTrafficSample(time.Now(), connect.ProxyBandwidthTrafficTotals)}
 
 	case "internals":
 		return controlResponse{OK: true, Internals: nodeInternals.Get(time.Now())}

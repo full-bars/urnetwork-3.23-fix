@@ -832,6 +832,51 @@ func ProxyBandwidthFamilyTotals() ProxyBandwidthFamily {
 	return f
 }
 
+// ProxyBandwidthTraffic is the whole set of live counter sums behind one traffic
+// reply: the four directional byte totals, the billable packet totals, and the
+// IPv6 share of the directional totals. The IPv4 share is each direction minus
+// the IPv6 one, clamped at zero.
+type ProxyBandwidthTraffic struct {
+	BillableRx, BillableTx uint64
+	TotalRx, TotalTx       uint64
+	BillableRxPackets      uint64
+	BillableTxPackets      uint64
+	V6                     ProxyBandwidthFamily
+}
+
+// ProxyBandwidthTrafficTotals sums the byte, packet and IPv6 counters across
+// every registered proxy in one pass, so one reply carries figures from one
+// moment. Each record's base and IPv6 counters are read together under its
+// trafficMu: an IPv6 credit writes both under that lock, and a reader that took
+// the base before the credit and the IPv6 counter after it would place IPv6
+// bytes above the matching base and derive a negative IPv4 figure. The lock is
+// held for those counter reads only. The sums drop when a proxy is removed from
+// the pool, so callers derive rates from deltas and skip a decrease.
+func ProxyBandwidthTrafficTotals() ProxyBandwidthTraffic {
+	var t ProxyBandwidthTraffic
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for _, h := range proxyHealthByIndex {
+		bw := h.bw
+		if bw == nil {
+			continue
+		}
+		bw.trafficMu.Lock()
+		t.BillableRx += bw.BillableRx.Load()
+		t.BillableTx += bw.BillableTx.Load()
+		t.TotalRx += bw.TotalRx.Load()
+		t.TotalTx += bw.TotalTx.Load()
+		t.BillableRxPackets += bw.BillableRxPackets.Load()
+		t.BillableTxPackets += bw.BillableTxPackets.Load()
+		t.V6.BillableRx += bw.BillableRxV6.Load()
+		t.V6.BillableTx += bw.BillableTxV6.Load()
+		t.V6.TotalRx += bw.TotalRxV6.Load()
+		t.V6.TotalTx += bw.TotalTxV6.Load()
+		bw.trafficMu.Unlock()
+	}
+	return t
+}
+
 // ProxyBandwidthSnapshotByKey returns the live bandwidth map keyed by proxy
 // IDENTITY (ProxySettings.Key(): address, or address+user for a shared-
 // gateway proxy) instead of ProxyHealthSnapshot's display format
