@@ -398,6 +398,7 @@ func TestLingerBannerAsciiRendering(t *testing.T) {
 }
 
 func TestLingerDialogRendersTheCommand(t *testing.T) {
+	lingerSeams(t, nil, false, true)
 	m, _ := lingerModel(t, false)
 	m.lingerFixable = true
 	m.openLingerDialog()
