@@ -659,6 +659,12 @@ func (self *screen) pump() {
 		if !ok {
 			continue
 		}
+		if self.closing.Load() {
+			// Close is finalizing the screen and its caller is usually the
+			// reader, so a full queue would never drain. Keep taking events so
+			// tcell's parser can finish, and drop them.
+			continue
+		}
 		if !self.send(out) {
 			return
 		}
