@@ -20,6 +20,8 @@ The `[extender] discovery started` line says the feed and gossip mesh are active
 
 `gossip health is ...` logs state transitions (`healthy`, `capped`, `bootstrapping`, `degraded`, `isolated`). Anomaly dumps record recent events when reject spikes or state regressions happen, rate-limited to at most once per 30 minutes.
 
+`[gossip]connect <peer> class=<class> err = <error>` reports the first dial failure for a peer and class at normal log level. Repeated failures of the same class are logged at verbosity 1. A successful connection resets the class. Classes include `timeout`, `refused`, `canceled`, `backoff`, `no_addrs`, `gated` and `other`.
+
 ## Release diagnostics and network binding
 
 The following are literal format strings. The provider fills the `%` fields at runtime.

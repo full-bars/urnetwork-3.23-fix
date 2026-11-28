@@ -72,6 +72,9 @@ func dominantDialFailure(stats *gossip.DialStats) (string, uint64) {
 	}{
 		{"refused", stats.Refused},
 		{"canceled", stats.Canceled},
+		{"backoff", stats.Backoff},
+		{"no_addrs", stats.NoAddrs},
+		{"gated", stats.Gated},
 		{"other", stats.Other},
 	} {
 		if candidate.n > count {

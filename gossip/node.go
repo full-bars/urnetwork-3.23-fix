@@ -398,6 +398,8 @@ type Node struct {
 	// takes the status lock.
 	dialCount             atomic.Int64
 	dialStats             dialCounters
+	dialFailureLock       sync.Mutex
+	dialFailureClasses    map[peer.ID]map[string]bool
 	messagesAccepted      atomic.Uint64
 	applyErrors           atomic.Uint64
 	lastAcceptedUnixMilli atomic.Int64
@@ -542,6 +544,7 @@ func NewNode(ctx context.Context, settings *NodeSettings) (*Node, error) {
 	// a peer that goes away should be replaced without waiting out the round
 	self.host.Network().Notify(&network.NotifyBundle{
 		ConnectedF: func(_ network.Network, conn network.Conn) {
+			self.noteDialClass(conn.RemotePeer(), "")
 			self.recordPeerEvent(conn, "connect")
 		},
 		DisconnectedF: func(_ network.Network, conn network.Conn) {
@@ -1077,6 +1080,45 @@ func (self *Node) runPeering() {
 	}
 }
 
+// allAddrsBackedOff reports whether libp2p holds every address of the peer in
+// dial backoff, so a dial now would fail at once without reaching the network.
+// A peer with no addresses is not treated as backed off.
+func allAddrsBackedOff(info peer.AddrInfo, backoff func(peer.ID, ma.Multiaddr) bool) bool {
+	if len(info.Addrs) == 0 {
+		return false
+	}
+	for _, addr := range info.Addrs {
+		if !backoff(info.ID, addr) {
+			return false
+		}
+	}
+	return true
+}
+
+// selectExtenderDials picks the extenders to dial this round. Connected peers
+// count toward the target, peers in backoff are skipped, and the free slots go
+// to the next candidates in order. The second result reports that a backed-off
+// peer was skipped while the target is still unmet.
+func selectExtenderDials(candidates []peer.AddrInfo, target int, connected func(peer.ID) bool, backedOff func(peer.AddrInfo) bool) ([]peer.AddrInfo, bool) {
+	count := 0
+	var pending []peer.AddrInfo
+	skipped := false
+	for _, info := range candidates {
+		if connected(info.ID) {
+			count++
+		} else if backedOff(info) {
+			skipped = true
+		} else {
+			pending = append(pending, info)
+		}
+	}
+	remaining := max(0, target-count)
+	if remaining < len(pending) {
+		pending = pending[:remaining]
+	}
+	return pending, skipped && count < target
+}
+
 // Connects to every operator address and to enough extenders to reach the
 // target. The dials run together and are joined here, so a round never
 // outlives the loop that started it.
@@ -1095,22 +1137,13 @@ func (self *Node) peer() {
 
 	// the extender target is counted on its own: the operator link is not one
 	// of the `PeerTarget` extenders (D3)
-	extenderCount := 0
-	pendingAddrInfos := []peer.AddrInfo{}
-	for _, addrInfo := range self.extenderPeers() {
-		if self.host.Network().Connectedness(addrInfo.ID) == network.Connected {
-			extenderCount += 1
-			continue
-		}
-		pendingAddrInfos = append(pendingAddrInfos, addrInfo)
-	}
-	for _, addrInfo := range pendingAddrInfos {
-		if self.settings.PeerTarget <= extenderCount {
-			break
-		}
-		addrInfos = append(addrInfos, addrInfo)
-		extenderCount += 1
-	}
+	pendingAddrInfos, _ := selectExtenderDials(self.extenderPeers(), self.settings.PeerTarget,
+		func(id peer.ID) bool { return self.host.Network().Connectedness(id) == network.Connected },
+		func(info peer.AddrInfo) bool {
+			s, ok := self.host.Network().(*swarm.Swarm)
+			return ok && allAddrsBackedOff(info, s.Backoff().Backoff)
+		})
+	addrInfos = append(addrInfos, pendingAddrInfos...)
 
 	// what this round chose is all the swarm may dial until the next round
 	// (node_gater.go); the previous round's dials were joined before this one
@@ -1147,6 +1180,38 @@ func (self *Node) peer() {
 	wg.Wait()
 }
 
+// noteDialClass records a dial failure class for a peer and reports whether
+// it is the first failure of that class since the peer last connected. An
+// empty class means the peer connected and forgets every recorded class. At
+// most 1024 peers are kept.
+func (self *Node) noteDialClass(id peer.ID, class string) bool {
+	self.dialFailureLock.Lock()
+	defer self.dialFailureLock.Unlock()
+	if class == "" {
+		delete(self.dialFailureClasses, id)
+		return false
+	}
+	if self.dialFailureClasses == nil {
+		self.dialFailureClasses = make(map[peer.ID]map[string]bool)
+	}
+	classes, ok := self.dialFailureClasses[id]
+	if !ok {
+		if len(self.dialFailureClasses) >= 1024 {
+			for old := range self.dialFailureClasses {
+				delete(self.dialFailureClasses, old)
+				break
+			}
+		}
+		classes = map[string]bool{}
+		self.dialFailureClasses[id] = classes
+	}
+	if classes[class] {
+		return false
+	}
+	classes[class] = true
+	return true
+}
+
 func (self *Node) connectPeer(addrInfo peer.AddrInfo) {
 	ctx, cancel := context.WithTimeout(self.ctx, self.settings.DialTimeout)
 	defer cancel()
@@ -1157,7 +1222,9 @@ func (self *Node) connectPeer(addrInfo peer.AddrInfo) {
 	// peer first: Connect adds back the addresses this round chose.
 	self.host.Peerstore().ClearAddrs(addrInfo.ID)
 	err := self.host.Connect(ctx, addrInfo)
-	if class := self.dialStats.recordResult(err); class != "" {
+	class := self.dialStats.recordResult(err)
+	first := self.noteDialClass(addrInfo.ID, class)
+	if class != "" {
 		self.eventRing().Record(Event{
 			Time:      self.now(),
 			Kind:      "dial",
@@ -1166,10 +1233,8 @@ func (self *Node) connectPeer(addrInfo peer.AddrInfo) {
 			Reason:    class,
 		})
 	}
-	if err != nil {
-		if self.log.V(1).Enabled() {
-			self.log.Infof("[gossip]connect %s err = %s\n", addrInfo.ID, err)
-		}
+	if err != nil && (first || self.log.V(1).Enabled()) {
+		self.log.Infof("[gossip]connect %s class=%s err = %s\n", addrInfo.ID, class, err)
 	}
 }
 
