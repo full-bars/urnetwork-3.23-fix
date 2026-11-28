@@ -169,7 +169,7 @@ Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), hos
 `urnet-tools top` groups its graph screens into pages. Page 1 is the dashboard and it is what `top` opens. The strip under the title lists the pages the provider has data for, and the page on screen is marked:
 
 ```
-[1 Overview] [2 Remote] [3 Billable] [4 Total] [5 Transports]
+[1 Overview] [2 Remote] [3 Billable] [4 Total] [5 Transports] [6 IPv4 / IPv6]
 ```
 
 The strip is on by default on every page, page 1 included, so the pages are visible without switching to one. Press `p` to hide it or show it again. A hidden strip gives its row back to the graphs, and the footer keeps the `[/] page` and `p tabs` hints in both states. The choice lasts for the session only. A new `top` starts with the strip on.
@@ -270,6 +270,19 @@ The legend gives the whole percent of each kind that carried traffic. Whole perc
 The table repeats the window per kind, with the payload as a rate over the span, and the live connection gauge. Only the two H1 carriers report a gauge. The line under the table splits the live H1 connections over the two carriers, because one total would hide which carrier carries the traffic.
 
 A counter that went down, for example when a proxy is removed, is skipped instead of read as negative traffic, so that kind shows as unused for the window.
+
+## IPv4 and IPv6 traffic
+
+Page 6 splits billable traffic by IP version. It uses the same mirrored layout as the direction pages, with two curves in each half:
+
+- IPv4 is drawn in the green the other pages use.
+- IPv6 is drawn in the URnetwork blue. The colorblind theme uses its accent, and a theme without colour tells the two apart by the `#` and `+` glyphs.
+
+Each half carries two series, so the legend, the corner averages and the peak label all name both figures, in the same order as the legend. The bold line under the box title is the window share, for example `IPv4 78%  IPv6 22%`. The two percentages are whole numbers and always add to 100, IPv6 taking the remainder. A window with no traffic reads `IPv4 0%  IPv6 0%  idle`.
+
+The provider counts IPv6 traffic and derives IPv4 by subtraction, so both curves are real figures from the same second. The IPv6 counters start at zero on every provider start and are not persisted, so a provider that just restarted reads as IPv4 until new IPv6 traffic arrives.
+
+The page appears only when the provider reports the split. A provider that predates it keeps its pages and offers no IP family page.
 
 ## Remote transfer chart
 

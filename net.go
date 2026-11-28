@@ -1099,7 +1099,7 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 
 		bw := RegisteredProxyBandwidth(self.Index)
 		if bw != nil || attempt != nil {
-			tc := &trackedConn{Conn: conn, bw: bw, attempt: attempt}
+			tc := &trackedConn{Conn: conn, bw: bw, attempt: attempt, v6: addrIsV6(conn.RemoteAddr())}
 			return tc, nil
 		}
 
@@ -1118,7 +1118,7 @@ func trackDirect(conn net.Conn, bw *ProxyBandwidth) net.Conn {
 	if _, ok := conn.(*trackedConn); ok {
 		return conn
 	}
-	return &trackedConn{Conn: conn, bw: bw}
+	return &trackedConn{Conn: conn, bw: bw, v6: addrIsV6(conn.RemoteAddr())}
 }
 
 type trackedConn struct {
@@ -1127,18 +1127,49 @@ type trackedConn struct {
 	// attempt, when set, also credits the bytes to the connect attempt that
 	// opened this connection (see attemptStats)
 	attempt *attemptStats
-	once    sync.Once
+	// v6 is the address family of the connection, read once from its remote
+	// address when the connection is wrapped. The family of a connection never
+	// changes, so the byte counters pay one field test and no address parse.
+	v6   bool
+	once sync.Once
+}
+
+// addrIsV6 reports whether addr names an IPv6 endpoint. Anything unparseable
+// counts as IPv4: a family the code cannot prove is never credited to IPv6.
+func addrIsV6(addr net.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	// The concrete address already carries a parsed IP. Reading it directly
+	// also keeps its zone, which ParseIP rejects in a string literal.
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		return a.IP != nil && a.IP.To4() == nil
+	case *net.UDPAddr:
+		return a.IP != nil && a.IP.To4() == nil
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	// A zone is part of a valid IPv6 literal, not part of the address to parse.
+	if i := strings.LastIndex(host, "%"); 0 <= i {
+		host = host[:i]
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.To4() == nil
 }
 
 // Read reads from the underlying connection and, when bw is set, credits the
-// byte count to the proxy's TotalRx.
+// byte count to the proxy's TotalRx, and to TotalRxV6 when the connection's
+// remote address is IPv6.
 func (self *trackedConn) Read(b []byte) (n int, err error) {
 	n, err = self.Conn.Read(b)
 	if n > 0 {
 		recordSocketBytes(self.socketPhase(), false, n)
 	}
 	if n > 0 && self.bw != nil {
-		self.bw.TotalRx.Add(uint64(n))
+		self.bw.addTraffic(&self.bw.TotalRx, &self.bw.TotalRxV6, uint64(n), self.v6)
 	}
 	if n > 0 && self.attempt != nil {
 		self.attempt.rx.Add(int64(n))
@@ -1147,14 +1178,15 @@ func (self *trackedConn) Read(b []byte) (n int, err error) {
 }
 
 // Write writes to the underlying connection and, when bw is set, credits the
-// byte count to the proxy's TotalTx.
+// byte count to the proxy's TotalTx, and to TotalTxV6 when the connection's
+// remote address is IPv6.
 func (self *trackedConn) Write(b []byte) (n int, err error) {
 	n, err = self.Conn.Write(b)
 	if n > 0 {
 		recordSocketBytes(self.socketPhase(), true, n)
 	}
 	if n > 0 && self.bw != nil {
-		self.bw.TotalTx.Add(uint64(n))
+		self.bw.addTraffic(&self.bw.TotalTx, &self.bw.TotalTxV6, uint64(n), self.v6)
 	}
 	if n > 0 && self.attempt != nil {
 		self.attempt.tx.Add(int64(n))

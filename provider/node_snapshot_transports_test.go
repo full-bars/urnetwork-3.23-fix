@@ -75,7 +75,9 @@ func TestLiveTransportsOmitsUnusedModes(t *testing.T) {
 
 // The traffic reply stays readable by a client that does not know the block.
 func TestLiveTrafficTransportsJSONIsAdditive(t *testing.T) {
-	sample := liveTrafficSample(snapT0, func() (uint64, uint64, uint64, uint64) { return 1, 2, 3, 4 }, func() (uint64, uint64) { return 5, 7 })
+	sample := liveTrafficSample(snapT0, func() connect.ProxyBandwidthTraffic {
+		return connect.ProxyBandwidthTraffic{BillableRx: 1, BillableTx: 2, TotalRx: 3, TotalTx: 4, BillableRxPackets: 5, BillableTxPackets: 7}
+	})
 	if sample.Transports == nil {
 		t.Fatal("traffic reply carries no transports block")
 	}

@@ -96,3 +96,54 @@ func TestPacketFieldsCompatibility(t *testing.T) {
 		t.Fatalf("live: %+v", live)
 	}
 }
+
+// The IP family split rides inside the direction block. A provider that predates
+// the IPv6 counters must decode as no split, so the family page is not offered.
+func TestFamilySplitCompatibility(t *testing.T) {
+	var old SnapshotTraffic
+	if err := json.Unmarshal([]byte(`{"directions":{"billable_rx":{"now_bps":1}}}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.Directions == nil || old.Directions.Families != nil {
+		t.Fatalf("old provider produced a family split: %+v", old.Directions)
+	}
+
+	body := `{"directions":{"families":{` +
+		`"billable_rx":{"v4":{"now_bps":300,"history_bps":[300,300]},"v6":{"now_bps":100,"history_bps":[100,100]}},` +
+		`"billable_tx":{"v4":{"now_bps":200},"v6":{"now_bps":50}},` +
+		`"total_rx":{"v4":{"now_bps":400},"v6":{"now_bps":150}},` +
+		`"total_tx":{"v4":{"now_bps":300},"v6":{"now_bps":90}}}}}`
+	var got SnapshotTraffic
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	fam := got.Directions.Families
+	if fam == nil {
+		t.Fatal("family split dropped")
+	}
+	if fam.BillableRx.V4.NowBps != 300 || fam.BillableRx.V6.NowBps != 100 ||
+		fam.BillableTx.V6.NowBps != 50 || fam.TotalRx.V6.NowBps != 150 || fam.TotalTx.V6.NowBps != 90 {
+		t.Fatalf("family split = %+v", fam)
+	}
+	if !reflect.DeepEqual(fam.BillableRx.V6.HistoryBps, []float64{100, 100}) {
+		t.Fatalf("v6 history = %v", fam.BillableRx.V6.HistoryBps)
+	}
+
+	// The live reply carries the IPv6 counters as plain values from a new
+	// provider and leaves the pointers nil from an old one.
+	var live LiveTraffic
+	if err := json.Unmarshal([]byte(`{"billable_rx_bytes_v6":0,"billable_tx_bytes_v6":7,"total_rx_bytes_v6":1,"total_tx_bytes_v6":2}`), &live); err != nil {
+		t.Fatal(err)
+	}
+	if live.BillableRxBytesV6 == nil || *live.BillableRxBytesV6 != 0 || *live.BillableTxBytesV6 != 7 ||
+		*live.TotalRxBytesV6 != 1 || *live.TotalTxBytesV6 != 2 {
+		t.Fatalf("live ipv6 counters = %+v", live)
+	}
+	var oldLive LiveTraffic
+	if err := json.Unmarshal([]byte(`{"billable_bytes":1}`), &oldLive); err != nil {
+		t.Fatal(err)
+	}
+	if oldLive.BillableRxBytesV6 != nil || oldLive.TotalTxBytesV6 != nil {
+		t.Fatalf("old provider produced ipv6 counters: %+v", oldLive)
+	}
+}

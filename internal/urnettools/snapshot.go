@@ -73,6 +73,26 @@ type SnapshotTrafficDirections struct {
 	BillableTx SnapshotTrafficDirection `json:"billable_tx"`
 	TotalRx    SnapshotTrafficDirection `json:"total_rx"`
 	TotalTx    SnapshotTrafficDirection `json:"total_tx"`
+	// Families splits each of the four quantities by IP family. nil from a
+	// provider that predates the IPv6 counters.
+	Families *SnapshotTrafficFamilies `json:"families,omitempty"`
+}
+
+// SnapshotFamilySplit holds the per-family rates for one quantity and direction.
+// V4 is derived by the provider as its base rate minus V6, so it is a real
+// figure, not a missing one.
+type SnapshotFamilySplit struct {
+	V4 SnapshotTrafficDirection `json:"v4"`
+	V6 SnapshotTrafficDirection `json:"v6"`
+}
+
+// SnapshotTrafficFamilies is the IP family split of the four directional
+// quantities, present only from a provider that counts IPv6 traffic.
+type SnapshotTrafficFamilies struct {
+	BillableRx SnapshotFamilySplit `json:"billable_rx"`
+	BillableTx SnapshotFamilySplit `json:"billable_tx"`
+	TotalRx    SnapshotFamilySplit `json:"total_rx"`
+	TotalTx    SnapshotFamilySplit `json:"total_tx"`
 }
 
 type SnapshotPacketRate struct {
@@ -108,6 +128,14 @@ type LiveTraffic struct {
 	TotalTxBytes      *uint64 `json:"total_tx_bytes,omitempty"`
 	BillableRxPackets *uint64 `json:"billable_rx_packets,omitempty"`
 	BillableTxPackets *uint64 `json:"billable_tx_packets,omitempty"`
+
+	// The IPv6 counters behind the billable and total byte sums. nil from a
+	// provider that predates them; a new provider sends zeros and a non-nil
+	// pointer, which is the shape the direction fields use.
+	BillableRxBytesV6 *uint64 `json:"billable_rx_bytes_v6,omitempty"`
+	BillableTxBytesV6 *uint64 `json:"billable_tx_bytes_v6,omitempty"`
+	TotalRxBytesV6    *uint64 `json:"total_rx_bytes_v6,omitempty"`
+	TotalTxBytesV6    *uint64 `json:"total_tx_bytes_v6,omitempty"`
 }
 
 // LiveTransport is one transport kind's cumulative counters plus its live

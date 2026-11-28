@@ -10,6 +10,9 @@ type trafficTestConn struct{ net.Conn }
 
 func (*trafficTestConn) Read(b []byte) (int, error)  { return copy(b, "reply"), nil }
 func (*trafficTestConn) Write(b []byte) (int, error) { return len(b), nil }
+func (*trafficTestConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 80}
+}
 
 type trafficTestPacketConn struct{ net.PacketConn }
 

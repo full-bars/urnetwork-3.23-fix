@@ -47,15 +47,17 @@ var (
 // remoteSeries is one curve: evenly spaced samples, oldest first, the newest at
 // the chart's Newest time. Group names the scale it is drawn against. Glyph is
 // the character the ASCII fallback draws; zero picks one from the series order.
+// OverlapGlyph optionally marks shared ASCII cells with another series.
 // Packets marks a packet rate series, formatted in pkt/s rather than bytes per
 // second in the corner figures.
 type remoteSeries struct {
-	Label   string
-	Style   tui.Style
-	Group   string
-	Glyph   rune
-	Packets bool
-	Values  []float64
+	Label        string
+	Style        tui.Style
+	Group        string
+	Glyph        rune
+	OverlapGlyph rune
+	Packets      bool
+	Values       []float64
 }
 
 // remoteChart is one frame of the mirrored chart. Now is the clock the plot
@@ -448,7 +450,7 @@ func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSe
 			if len(pts) == 0 {
 				continue
 			}
-			c.drawHalfASCII(b, s, pts, scales[s.Group], up, y0, rows, i)
+			c.drawHalfASCII(b, s, pts, scales[s.Group], up, y0, rows, i, dir)
 		}
 		return
 	}
@@ -481,7 +483,7 @@ func anyPositive(vals []float64) bool {
 
 // drawHalfASCII is the fallback for terminals without braille: one column per
 // cell, the curve drawn as a run of glyphs from the center outward.
-func (c remoteChart) drawHalfASCII(b *tui.Buffer, s remoteSeries, pts []remotePoint, scale float64, up bool, y0, rows, idx int) {
+func (c remoteChart) drawHalfASCII(b *tui.Buffer, s remoteSeries, pts []remotePoint, scale float64, up bool, y0, rows, idx int, dir []remoteSeries) {
 	if scale <= 0 {
 		scale = 1
 	}
@@ -498,35 +500,67 @@ func (c remoteChart) drawHalfASCII(b *tui.Buffer, s remoteSeries, pts []remotePo
 			if !up {
 				y = y0 + i
 			}
-			b.Set(x, y, tui.Cell{Rune: glyph, Style: s.Style})
+			cellGlyph := glyph
+			if s.OverlapGlyph != 0 {
+				old := b.Cell(x, y).Rune
+				for j := idx + 1; j < len(dir); j++ {
+					other := dir[j].Glyph
+					if other == 0 {
+						other = []rune{'#', '+', '*', 'o'}[j%4]
+					}
+					if (old == other && other != glyph) || old == s.OverlapGlyph {
+						cellGlyph = s.OverlapGlyph
+						break
+					}
+				}
+			}
+			b.Set(x, y, tui.Cell{Rune: cellGlyph, Style: s.Style})
 		}
 	}
 }
 
-// drawPeak labels the window peak of the direction's first series. The label
-// slides sideways with the peak's column and stays inside the plot.
+// drawPeak labels the window peak of a half. Every series with a peak gets its
+// figure in the label, in series order, at the column where the first of them
+// peaked: two curves that move together still print both figures without one
+// label covering the other. The label slides sideways with the peak's column
+// and stays inside the plot.
 func (c remoteChart) drawPeak(b *tui.Buffer, dir []remoteSeries, up bool, row int) {
 	if row < 0 || len(dir) == 0 {
-		return
-	}
-	pts := remotePointsOf(c, dir[0].Values, 2*b.Width())
-	if len(pts) == 0 {
-		return
-	}
-	peak, at := 0.0, 0.0
-	for _, p := range pts {
-		if p.v > peak {
-			peak, at = p.v, p.x
-		}
-	}
-	if peak <= 0 {
 		return
 	}
 	arrow := '▲'
 	if !up {
 		arrow = '▼'
 	}
-	text := tui.Rate(peak) + " " + string(arrow)
+	figures := make([]string, 0, len(dir))
+	at := 0.0
+	for _, s := range dir {
+		// Packet rates have a separate scale and are not byte-rate peaks.
+		if s.Packets {
+			continue
+		}
+		pts := remotePointsOf(c, s.Values, 2*b.Width())
+		if len(pts) == 0 {
+			continue
+		}
+		peak, x := 0.0, 0.0
+		for _, p := range pts {
+			if p.v > peak {
+				peak, x = p.v, p.x
+			}
+		}
+		if peak <= 0 {
+			continue
+		}
+		if len(figures) == 0 {
+			at = x
+		}
+		figures = append(figures, tui.Rate(peak))
+	}
+	if len(figures) == 0 {
+		return
+	}
+	text := strings.Join(figures, " ") + " " + string(arrow)
 	width := tui.StringWidth(text)
 	if width >= b.Width() {
 		b.Put(tui.Truncate(text, b.Width(), c.ASCII), 0, row, c.Dim)

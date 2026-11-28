@@ -19,12 +19,18 @@ import (
 // that silently zeroed LatencyNs/SocksLatencyNs on every copy.
 func proxyBandwidthSnapshot(bw *ProxyBandwidth) *ProxyBandwidth {
 	out := &ProxyBandwidth{}
+	bw.trafficMu.Lock()
 	out.TotalRx.Store(bw.TotalRx.Load())
 	out.TotalTx.Store(bw.TotalTx.Load())
 	out.BillableRx.Store(bw.BillableRx.Load())
 	out.BillableTx.Store(bw.BillableTx.Load())
 	out.BillableRxPackets.Store(bw.BillableRxPackets.Load())
 	out.BillableTxPackets.Store(bw.BillableTxPackets.Load())
+	out.TotalRxV6.Store(bw.TotalRxV6.Load())
+	out.TotalTxV6.Store(bw.TotalTxV6.Load())
+	out.BillableRxV6.Store(bw.BillableRxV6.Load())
+	out.BillableTxV6.Store(bw.BillableTxV6.Load())
+	bw.trafficMu.Unlock()
 	out.Clients.Store(bw.Clients.Load())
 	out.LatencyNs.Store(bw.LatencyNs.Load())
 	out.SocksLatencyNs.Store(bw.SocksLatencyNs.Load())
@@ -45,19 +51,53 @@ func proxyBandwidthSnapshot(bw *ProxyBandwidth) *ProxyBandwidth {
 type ProxyBandwidth struct {
 	TotalRx, TotalTx, BillableRx, BillableTx atomic.Uint64
 	BillableRxPackets, BillableTxPackets     atomic.Uint64
-	Clients                                  atomic.Int64
-	LatencyNs                                atomic.Int64
-	SocksLatencyNs                           atomic.Int64
+	// The IPv6 counters are written only for IPv6 traffic. The IPv4 figure is
+	// the matching base counter minus the IPv6 one, so the IPv4 path takes no
+	// extra atomic add and a reader clamps the difference at zero.
+	TotalRxV6, TotalTxV6       atomic.Uint64
+	BillableRxV6, BillableTxV6 atomic.Uint64
+	Clients                    atomic.Int64
+	LatencyNs                  atomic.Int64
+	SocksLatencyNs             atomic.Int64
 
 	// seeded marks a record that has already been given the totals persisted
 	// for its identity (metrics_persist.go). Guarded by proxyHealthMu, not by
 	// mu: it is only read and written while the registry lock is held.
 	seeded bool
 
+	trafficMu sync.Mutex
+
+	// retiredV6 is the largest IPv6 total already folded into the aggregate
+	// retired counter for this record. Guarded by proxyHealthMu with seeded.
+	retiredV6 ProxyBandwidthFamily
+
 	mu            sync.Mutex
 	sessions      map[any]time.Time
 	presenceSince time.Time // when clients first arrived in the current continuous window
 	lastActivity  time.Time // when the last session was added or removed
+}
+
+// WithTrafficUpdate groups related traffic counter changes into one update.
+// The callback must not invoke a proxy snapshot or another traffic update.
+func (self *ProxyBandwidth) WithTrafficUpdate(update func()) {
+	self.trafficMu.Lock()
+	defer self.trafficMu.Unlock()
+	update()
+}
+
+// addTraffic credits count to the base counter and, for IPv6 traffic, to the
+// matching IPv6 counter. Only the IPv6 pair takes trafficMu: an IPv4 credit is
+// a single atomic add, so a snapshot sees it either whole or not at all, and
+// the IPv4 path stays free of the lock.
+func (self *ProxyBandwidth) addTraffic(base, v6 *atomic.Uint64, count uint64, isV6 bool) {
+	if !isV6 {
+		base.Add(count)
+		return
+	}
+	self.WithTrafficUpdate(func() {
+		base.Add(count)
+		v6.Add(count)
+	})
 }
 
 // clientPresenceGrace is how long after all sessions close before resetting
@@ -219,6 +259,10 @@ var (
 	// one gateway address (different accounts, e.g. Decodo) are different
 	// identities and must not shadow each other here.
 	proxyHealthByKey = map[string]*proxyHealth{}
+
+	// IPv6 bytes already retired from records that have left the pool. Only the
+	// metrics series uses this aggregate; the chart keeps reading live totals.
+	proxyRetiredV6 ProxyBandwidthFamily
 
 	proxyLifetimeRecovered int
 	proxyLifetimeLost      int
@@ -476,6 +520,7 @@ func UnregisterProxy(id int) {
 		// Persist the final byte totals before the record goes away, so bytes
 		// moved since the last flush are not lost with it.
 		foldProxyBandwidthLocked(h.key, h.bw)
+		retireProxyV6Locked(h.bw)
 	}
 	delete(proxyHealthByIndex, id)
 }
@@ -695,6 +740,141 @@ func ProxyBandwidthPacketTotals() (billableRxPackets, billableTxPackets uint64) 
 		}
 	}
 	return
+}
+
+// ProxyBandwidthFamily is the IPv6 share of the bandwidth counters summed
+// across registered proxies. The IPv4 share is each base total minus the field
+// here, clamped at zero, so a reader needs no separate IPv4 walk.
+type ProxyBandwidthFamily struct {
+	BillableRx, BillableTx uint64
+	TotalRx, TotalTx       uint64
+}
+
+// retireProxyV6Locked carries a departing proxy's IPv6 bytes forward for the
+// metrics counter. Taking the maximum keeps a second removal of the same
+// record from counting its bytes twice. Caller holds proxyHealthMu.
+func retireProxyV6Locked(bw *ProxyBandwidth) {
+	if bw == nil {
+		return
+	}
+	live := ProxyBandwidthFamily{
+		BillableRx: bw.BillableRxV6.Load(),
+		BillableTx: bw.BillableTxV6.Load(),
+		TotalRx:    bw.TotalRxV6.Load(),
+		TotalTx:    bw.TotalTxV6.Load(),
+	}
+	// Only the increase over what this record already contributed goes into
+	// the aggregate, so a second retirement of the same bytes is a no-op.
+	seen := bw.retiredV6
+	plus := func(live, seen uint64) uint64 {
+		if seen < live {
+			return live - seen
+		}
+		return 0
+	}
+	inc := ProxyBandwidthFamily{
+		BillableRx: plus(live.BillableRx, seen.BillableRx),
+		BillableTx: plus(live.BillableTx, seen.BillableTx),
+		TotalRx:    plus(live.TotalRx, seen.TotalRx),
+		TotalTx:    plus(live.TotalTx, seen.TotalTx),
+	}
+	bw.retiredV6.BillableRx = max(seen.BillableRx, live.BillableRx)
+	bw.retiredV6.BillableTx = max(seen.BillableTx, live.BillableTx)
+	bw.retiredV6.TotalRx = max(seen.TotalRx, live.TotalRx)
+	bw.retiredV6.TotalTx = max(seen.TotalTx, live.TotalTx)
+	proxyRetiredV6.BillableRx += uint64(inc.BillableRx)
+	proxyRetiredV6.BillableTx += uint64(inc.BillableTx)
+	proxyRetiredV6.TotalRx += uint64(inc.TotalRx)
+	proxyRetiredV6.TotalTx += uint64(inc.TotalTx)
+}
+
+// ProxyBandwidthFamilyTotalsMonotonic is the series the provider exposes as a
+// counter: live IPv6 bytes plus the final bytes of proxies that have left.
+// The chart keeps using ProxyBandwidthFamilyTotals, whose live sums let it
+// derive a consistent IPv4 share from the matching live base totals.
+func ProxyBandwidthFamilyTotalsMonotonic() ProxyBandwidthFamily {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	f := proxyRetiredV6
+	for _, h := range proxyHealthByIndex {
+		if h.bw == nil {
+			continue
+		}
+		f.BillableRx += h.bw.BillableRxV6.Load()
+		f.BillableTx += h.bw.BillableTxV6.Load()
+		f.TotalRx += h.bw.TotalRxV6.Load()
+		f.TotalTx += h.bw.TotalTxV6.Load()
+	}
+	return f
+}
+
+// ProxyBandwidthFamilyTotals sums the IPv6 byte counters across every registered
+// proxy. They cover only IPv6 traffic: IPv4 is derived by the reader from the
+// matching ProxyBandwidth*Totals figure minus these, which is why the IPv4
+// accounting path pays no extra atomic add. A record re-registered after a
+// provider restart starts these counters at zero (they are not persisted), so
+// the persisted bytes read as IPv4 until new IPv6 traffic arrives. The sums drop
+// when a proxy is removed from the pool, so a reader derives rates from deltas
+// and skips a decrease.
+func ProxyBandwidthFamilyTotals() ProxyBandwidthFamily {
+	var f ProxyBandwidthFamily
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for _, h := range proxyHealthByIndex {
+		if h.bw == nil {
+			continue
+		}
+		f.BillableRx += h.bw.BillableRxV6.Load()
+		f.BillableTx += h.bw.BillableTxV6.Load()
+		f.TotalRx += h.bw.TotalRxV6.Load()
+		f.TotalTx += h.bw.TotalTxV6.Load()
+	}
+	return f
+}
+
+// ProxyBandwidthTraffic is the whole set of live counter sums behind one traffic
+// reply: the four directional byte totals, the billable packet totals, and the
+// IPv6 share of the directional totals. The IPv4 share is each direction minus
+// the IPv6 one, clamped at zero.
+type ProxyBandwidthTraffic struct {
+	BillableRx, BillableTx uint64
+	TotalRx, TotalTx       uint64
+	BillableRxPackets      uint64
+	BillableTxPackets      uint64
+	V6                     ProxyBandwidthFamily
+}
+
+// ProxyBandwidthTrafficTotals sums the byte, packet and IPv6 counters across
+// every registered proxy in one pass, so one reply carries figures from one
+// moment. Each record's base and IPv6 counters are read together under its
+// trafficMu: an IPv6 credit writes both under that lock, and a reader that took
+// the base before the credit and the IPv6 counter after it would place IPv6
+// bytes above the matching base and derive a negative IPv4 figure. The lock is
+// held for those counter reads only. The sums drop when a proxy is removed from
+// the pool, so callers derive rates from deltas and skip a decrease.
+func ProxyBandwidthTrafficTotals() ProxyBandwidthTraffic {
+	var t ProxyBandwidthTraffic
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for _, h := range proxyHealthByIndex {
+		bw := h.bw
+		if bw == nil {
+			continue
+		}
+		bw.trafficMu.Lock()
+		t.BillableRx += bw.BillableRx.Load()
+		t.BillableTx += bw.BillableTx.Load()
+		t.TotalRx += bw.TotalRx.Load()
+		t.TotalTx += bw.TotalTx.Load()
+		t.BillableRxPackets += bw.BillableRxPackets.Load()
+		t.BillableTxPackets += bw.BillableTxPackets.Load()
+		t.V6.BillableRx += bw.BillableRxV6.Load()
+		t.V6.BillableTx += bw.BillableTxV6.Load()
+		t.V6.TotalRx += bw.TotalRxV6.Load()
+		t.V6.TotalTx += bw.TotalTxV6.Load()
+		bw.trafficMu.Unlock()
+	}
+	return t
 }
 
 // ProxyBandwidthSnapshotByKey returns the live bandwidth map keyed by proxy
@@ -976,6 +1156,7 @@ func UnregisterProxyByKey(key string) {
 	if !ok {
 		return
 	}
+	retireProxyV6Locked(h.bw)
 	delete(proxyHealthByKey, key)
 	for idx, entry := range proxyHealthByIndex {
 		if entry == h {

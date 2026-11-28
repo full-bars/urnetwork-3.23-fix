@@ -3614,6 +3614,44 @@ func (self *RemoteUserNatProvider) SecurityPolicyStats(reset bool) SecurityPolic
 	return self.securityPolicy.Stats().Stats(reset)
 }
 
+// ipv6Packet reports whether packet starts with an IPv6 header. One byte of
+// the header decides the version, so a caller that has no parsed path can still
+// split traffic by family for free.
+func ipv6Packet(packet []byte) bool {
+	return 0 < len(packet) && packet[0]>>4 == 6
+}
+
+// countBillableRx credits one billable packet received from the client side.
+// ipPath is the parsed path when the caller already has one, and the packet
+// header decides otherwise. The IPv6 counter is written only for IPv6 traffic,
+// so an IPv4 packet pays the base add it always paid. IPv4 is derived as the
+// base counter minus the IPv6 one (see ProxyBandwidthFamilyTotals).
+func (self *RemoteUserNatProvider) countBillableRx(ipPath *IpPath, packet []byte) {
+	if self.bw == nil {
+		return
+	}
+	byteCount := uint64(len(packet))
+	v6 := ipv6Packet(packet)
+	if ipPath != nil {
+		v6 = ipPath.Version == 6
+	}
+	self.bw.addTraffic(&self.bw.BillableRx, &self.bw.BillableRxV6, byteCount, v6)
+	self.bw.BillableRxPackets.Add(1)
+}
+
+// countBillableTx credits one billable packet sent toward the client. The
+// counter is credited before the packet is parsed, so the header byte decides
+// the family. The IPv6 share is written only for IPv6 traffic, as on the
+// receive side.
+func (self *RemoteUserNatProvider) countBillableTx(packet []byte) {
+	if self.bw == nil {
+		return
+	}
+	byteCount := uint64(len(packet))
+	self.bw.addTraffic(&self.bw.BillableTx, &self.bw.BillableTxV6, byteCount, ipv6Packet(packet))
+	self.bw.BillableTxPackets.Add(1)
+}
+
 // `ReceivePacketFunction`
 func (self *RemoteUserNatProvider) Receive(
 	source TransferPath,
@@ -3621,10 +3659,7 @@ func (self *RemoteUserNatProvider) Receive(
 	ipPath *IpPath,
 	packet []byte,
 ) {
-	if self.bw != nil {
-		self.bw.BillableRx.Add(uint64(len(packet)))
-		self.bw.BillableRxPackets.Add(1)
-	}
+	self.countBillableRx(ipPath, packet)
 	// self.client.log.Infof("[trace]provider return packet for %s\n", source.SourceId)
 
 	if self.client.ClientId() == source.SourceId {
@@ -3725,10 +3760,7 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 				continue
 			}
 			ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
-			if self.bw != nil {
-				self.bw.BillableTx.Add(uint64(len(ipPacketToProvider.IpPacket.PacketBytes)))
-				self.bw.BillableTxPackets.Add(1)
-			}
+			self.countBillableTx(ipPacketToProvider.IpPacket.PacketBytes)
 
 			if isIpFragmentPacket(ipPacketToProvider.IpPacket.PacketBytes) {
 				self.receiveFragment(source, peer, ipPacketToProvider.IpPacket.PacketBytes)

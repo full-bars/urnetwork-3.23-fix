@@ -94,6 +94,24 @@ type SnapshotTrafficDirections struct {
 	BillableTx SnapshotTrafficDirection `json:"billable_tx"`
 	TotalRx    SnapshotTrafficDirection `json:"total_rx"`
 	TotalTx    SnapshotTrafficDirection `json:"total_tx"`
+	// Families is the per-family split, nil when the running provider has no
+	// IPv6 counters to split on.
+	Families *SnapshotTrafficFamilies `json:"families,omitempty"`
+}
+
+// SnapshotFamilySplit is one directional quantity split by IP family: V4
+// derived, V6 counted directly.
+type SnapshotFamilySplit struct {
+	V4 SnapshotTrafficDirection `json:"v4"`
+	V6 SnapshotTrafficDirection `json:"v6"`
+}
+
+// SnapshotTrafficFamilies is the IP family split of the directional quantities.
+type SnapshotTrafficFamilies struct {
+	BillableRx SnapshotFamilySplit `json:"billable_rx"`
+	BillableTx SnapshotFamilySplit `json:"billable_tx"`
+	TotalRx    SnapshotFamilySplit `json:"total_rx"`
+	TotalTx    SnapshotFamilySplit `json:"total_tx"`
 }
 
 // SnapshotPacketRate reports billable IP packets per second.
@@ -128,6 +146,14 @@ type LiveTraffic struct {
 	TotalTxBytes      uint64 `json:"total_tx_bytes"`
 	BillableRxPackets uint64 `json:"billable_rx_packets"`
 	BillableTxPackets uint64 `json:"billable_tx_packets"`
+
+	// The IPv6 share of each byte counter above. Always sent: a provider built
+	// from this tree counts IPv6, and an older provider has no field at all,
+	// which the client reads as nil.
+	BillableRxBytesV6 uint64 `json:"billable_rx_bytes_v6"`
+	BillableTxBytesV6 uint64 `json:"billable_tx_bytes_v6"`
+	TotalRxBytesV6    uint64 `json:"total_rx_bytes_v6"`
+	TotalTxBytesV6    uint64 `json:"total_tx_bytes_v6"`
 
 	// Transports is the per-kind transport block. A provider that predates it
 	// sends nothing here.
@@ -211,21 +237,25 @@ func carried(framesTx, framesRx, bytesTx, bytesRx uint64, up int64) bool {
 	return framesTx|framesRx|bytesTx|bytesRx != 0 || up != 0
 }
 
-// liveTrafficSample reads the counter sums at now.
-func liveTrafficSample(now time.Time, totals func() (billableRx, billableTx, totalRx, totalTx uint64), packets func() (uint64, uint64)) *LiveTraffic {
-	billableRx, billableTx, totalRx, totalTx := totals()
-	rxPackets, txPackets := packets()
+// liveTrafficSample reads the counter sums at now. One call returns every figure
+// in the reply, so the byte, packet and IPv6 totals describe the same moment.
+func liveTrafficSample(now time.Time, totals func() connect.ProxyBandwidthTraffic) *LiveTraffic {
+	t := totals()
 	return &LiveTraffic{
 		AtUnixNano:        now.UnixNano(),
-		BillableBytes:     billableRx + billableTx,
-		TotalBytes:        totalRx + totalTx,
-		BillableRxBytes:   billableRx,
-		BillableTxBytes:   billableTx,
-		TotalRxBytes:      totalRx,
-		TotalTxBytes:      totalTx,
-		BillableRxPackets: rxPackets,
-		BillableTxPackets: txPackets,
+		BillableBytes:     t.BillableRx + t.BillableTx,
+		TotalBytes:        t.TotalRx + t.TotalTx,
+		BillableRxBytes:   t.BillableRx,
+		BillableTxBytes:   t.BillableTx,
+		TotalRxBytes:      t.TotalRx,
+		TotalTxBytes:      t.TotalTx,
+		BillableRxPackets: t.BillableRxPackets,
+		BillableTxPackets: t.BillableTxPackets,
 		Transports:        liveTransportsSample(connect.TransportModeStats(), h1ConnectionProcessStats.Snapshot()),
+		BillableRxBytesV6: t.V6.BillableRx,
+		BillableTxBytesV6: t.V6.BillableTx,
+		TotalRxBytesV6:    t.V6.TotalRx,
+		TotalTxBytesV6:    t.V6.TotalTx,
 	}
 }
 
@@ -465,10 +495,19 @@ type directionLanes struct {
 	billableRx, billableTx uint64
 	totalRx, totalTx       uint64
 	packetRx, packetTx     uint64
+
+	billableRxV6, billableTxV6 uint64
+	totalRxV6, totalTxV6       uint64
 }
 
-// The four directional lanes, in sampler order: billable rx, billable tx,
-// total rx, total tx.
+// familyDebt tracks IPv6 bytes observed before the matching base bytes for one
+// proxy, per quantity. It is cleared when that proxy leaves the sampler.
+type familyDebt struct {
+	billableRx, billableTx, totalRx, totalTx uint64
+}
+
+// The directional lanes, in sampler order: billable rx, billable tx, total rx,
+// total tx, plus their IPv6 shares.
 const (
 	dirBillableRx = iota
 	dirBillableTx
@@ -476,6 +515,14 @@ const (
 	dirTotalTx
 	dirPacketRx
 	dirPacketTx
+	dirBillableRxV6
+	dirBillableTxV6
+	dirTotalRxV6
+	dirTotalTxV6
+	dirBillableRxV4
+	dirBillableTxV4
+	dirTotalRxV4
+	dirTotalTxV4
 	directionLaneCount
 )
 
@@ -491,6 +538,9 @@ type directionSampler struct {
 	rings    [directionLaneCount][snapshotRingSize]int64
 	next     int // slot the next sample is written to
 	count    int // valid samples, capped at snapshotRingSize
+	// familyDebt holds IPv6 bytes observed before their base bytes, per proxy.
+	// Guarded by mu; entries disappear when a proxy leaves the sampler.
+	familyDebt map[string]familyDebt
 	// session keeps every delta counted since the provider started, per lane.
 	session [directionLaneCount]uint64
 	// recorded counts every sample ever written to the rings, so the newest
@@ -511,35 +561,84 @@ func (s *directionSampler) sample(cur map[string]directionLanes, now time.Time) 
 
 	first := s.prev == nil
 	var deltas [directionLaneCount]uint64
+	// A counter that went down (a respawned proxy starts from zero) adds
+	// nothing for this tick; uint64 subtraction would wrap instead.
+	delta := func(cur, prev uint64) uint64 {
+		if cur < prev {
+			return 0
+		}
+		return cur - prev
+	}
+	// Match this proxy's IPv6 bytes against its own base bytes. A deficit left
+	// by an earlier tick is carried only for this proxy and cleared when it
+	// leaves, so another proxy's traffic can never pay it.
+	pay := func(base, v6 uint64, debt *uint64) uint64 {
+		need := v6 + *debt
+		if need < v6 {
+			need = ^uint64(0)
+		}
+		if base >= need {
+			*debt = 0
+			return base - need
+		}
+		*debt = need - base
+		return 0
+	}
+	if s.familyDebt == nil {
+		s.familyDebt = map[string]familyDebt{}
+	}
 	for k, v := range cur {
 		p, ok := s.prev[k]
 		if !ok {
 			continue
 		}
-		// A counter that went down (a respawned proxy starts from zero) adds
-		// nothing for this tick; uint64 subtraction would wrap instead.
-		if v.billableRx >= p.billableRx {
-			deltas[dirBillableRx] += v.billableRx - p.billableRx
+		bRx := delta(v.billableRx, p.billableRx)
+		bTx := delta(v.billableTx, p.billableTx)
+		tRx := delta(v.totalRx, p.totalRx)
+		tTx := delta(v.totalTx, p.totalTx)
+		v6BRx := delta(v.billableRxV6, p.billableRxV6)
+		v6BTx := delta(v.billableTxV6, p.billableTxV6)
+		v6TRx := delta(v.totalRxV6, p.totalRxV6)
+		v6TTx := delta(v.totalTxV6, p.totalTxV6)
+		deltas[dirBillableRx] += bRx
+		deltas[dirBillableTx] += bTx
+		deltas[dirTotalRx] += tRx
+		deltas[dirTotalTx] += tTx
+		deltas[dirPacketRx] += delta(v.packetRx, p.packetRx)
+		deltas[dirPacketTx] += delta(v.packetTx, p.packetTx)
+		deltas[dirBillableRxV6] += v6BRx
+		deltas[dirBillableTxV6] += v6BTx
+		deltas[dirTotalRxV6] += v6TRx
+		deltas[dirTotalTxV6] += v6TTx
+		d := s.familyDebt[k]
+		// A respawned proxy reports counters starting over. Its old debt
+		// belongs to the previous record, not to the bytes that follow.
+		if v.billableRx < p.billableRx || v.billableRxV6 < p.billableRxV6 {
+			d.billableRx = 0
 		}
-		if v.billableTx >= p.billableTx {
-			deltas[dirBillableTx] += v.billableTx - p.billableTx
+		if v.billableTx < p.billableTx || v.billableTxV6 < p.billableTxV6 {
+			d.billableTx = 0
 		}
-		if v.totalRx >= p.totalRx {
-			deltas[dirTotalRx] += v.totalRx - p.totalRx
+		if v.totalRx < p.totalRx || v.totalRxV6 < p.totalRxV6 {
+			d.totalRx = 0
 		}
-		if v.totalTx >= p.totalTx {
-			deltas[dirTotalTx] += v.totalTx - p.totalTx
+		if v.totalTx < p.totalTx || v.totalTxV6 < p.totalTxV6 {
+			d.totalTx = 0
 		}
-		if v.packetRx >= p.packetRx {
-			deltas[dirPacketRx] += v.packetRx - p.packetRx
-		}
-		if v.packetTx >= p.packetTx {
-			deltas[dirPacketTx] += v.packetTx - p.packetTx
-		}
+		deltas[dirBillableRxV4] += pay(bRx, v6BRx, &d.billableRx)
+		deltas[dirBillableTxV4] += pay(bTx, v6BTx, &d.billableTx)
+		deltas[dirTotalRxV4] += pay(tRx, v6TRx, &d.totalRx)
+		deltas[dirTotalTxV4] += pay(tTx, v6TTx, &d.totalTx)
+		s.familyDebt[k] = d
 	}
 	next := make(map[string]directionLanes, len(cur))
 	for k, v := range cur {
 		next[k] = v
+	}
+	for k := range s.familyDebt {
+		if _, ok := next[k]; !ok {
+			delete(s.familyDebt, k)
+		}
 	}
 	elapsed := now.Sub(s.prevTime).Seconds()
 	s.prev = next
@@ -615,6 +714,27 @@ func (s *directionSampler) packetRate(lane int) SnapshotPacketRate {
 		return SnapshotPacketRate{}
 	}
 	return SnapshotPacketRate{NowPps: h[len(h)-1], Avg1mPps: avgTail(h, 60), Avg5mPps: avgTail(h, 300), HistoryPps: h}
+}
+
+// familySplit builds one quantity's V4 and V6 rates. V4 is reconciled from raw
+// byte deltas in sample() while proxy identity is still available, so a base
+// counter catching up cannot steal another proxy's traffic and a per-proxy
+// deficit never survives that proxy leaving.
+func (s *directionSampler) familySplit(v4Lane, v6Lane int) SnapshotFamilySplit {
+	return SnapshotFamilySplit{
+		V4: s.direction(v4Lane, s.history(v4Lane)),
+		V6: s.direction(v6Lane, s.history(v6Lane)),
+	}
+}
+
+// familyBlock builds the IP family split of the four directional quantities.
+func (s *directionSampler) familyBlock() SnapshotTrafficFamilies {
+	return SnapshotTrafficFamilies{
+		BillableRx: s.familySplit(dirBillableRxV4, dirBillableRxV6),
+		BillableTx: s.familySplit(dirBillableTxV4, dirBillableTxV6),
+		TotalRx:    s.familySplit(dirTotalRxV4, dirTotalRxV6),
+		TotalTx:    s.familySplit(dirTotalTxV4, dirTotalTxV6),
+	}
 }
 
 // cumulativeSample is one reading of the monotonic counters behind the idle
@@ -841,6 +961,9 @@ type snapshotSources struct {
 	// means no per-direction figures.
 	directions     func() map[string]directionLanes
 	packetCounters bool
+	// familyCounters reports whether this source counts IPv6 traffic, which
+	// decides whether the snapshot carries the IP family split.
+	familyCounters bool
 	// lifetimeBillable reports the persisted lifetime billable total, false
 	// when the lifetime store is not running. Nil means not available.
 	lifetimeBillable func() (uint64, bool)
@@ -996,6 +1119,10 @@ func (c *nodeSnapshotCollector) trafficSnapshot() *SnapshotTraffic {
 	}
 	if c.src.directions != nil {
 		d := c.dir.block()
+		if c.src.familyCounters {
+			f := c.dir.familyBlock()
+			d.Families = &f
+		}
 		tr.Directions = &d
 	}
 	if c.src.packetCounters && c.src.directions != nil {
@@ -1112,6 +1239,11 @@ func readProxyBandwidth() (billable, total map[string]uint64, directions map[str
 			totalTx:    p.TotalTx.Load(),
 			packetRx:   p.BillableRxPackets.Load(),
 			packetTx:   p.BillableTxPackets.Load(),
+
+			billableRxV6: p.BillableRxV6.Load(),
+			billableTxV6: p.BillableTxV6.Load(),
+			totalRxV6:    p.TotalRxV6.Load(),
+			totalTxV6:    p.TotalTxV6.Load(),
 		}
 	}
 	return billable, total, directions
@@ -1124,6 +1256,7 @@ func productionSnapshotSources() snapshotSources {
 	})
 	return snapshotSources{
 		packetCounters: true,
+		familyCounters: true,
 		now:            time.Now,
 		startedAt:      providerStartTime,
 		billable: func() map[string]uint64 {

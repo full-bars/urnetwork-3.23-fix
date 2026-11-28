@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // Session totals accumulate the same deltas the rate uses, so a proxy that was
@@ -139,9 +141,13 @@ func TestDirectionSamplerSkipsDecreases(t *testing.T) {
 // against the provider's clock, not the socket round trip.
 func TestLiveTrafficSample(t *testing.T) {
 	at := snapT0.Add(90 * time.Minute)
-	got := liveTrafficSample(at, func() (billableRx, billableTx, totalRx, totalTx uint64) {
-		return 300, 400, 900, 1200
-	}, func() (uint64, uint64) { return 5, 7 })
+	got := liveTrafficSample(at, func() connect.ProxyBandwidthTraffic {
+		return connect.ProxyBandwidthTraffic{
+			BillableRx: 300, BillableTx: 400, TotalRx: 900, TotalTx: 1200,
+			BillableRxPackets: 5, BillableTxPackets: 7,
+			V6: connect.ProxyBandwidthFamily{BillableRx: 10, BillableTx: 12, TotalRx: 20, TotalTx: 30},
+		}
+	})
 	if got.AtUnixNano != at.UnixNano() {
 		t.Fatalf("timestamp = %d, want %d", got.AtUnixNano, at.UnixNano())
 	}
@@ -150,6 +156,137 @@ func TestLiveTrafficSample(t *testing.T) {
 	}
 	if got.BillableRxBytes != 300 || got.BillableTxBytes != 400 || got.TotalRxBytes != 900 || got.TotalTxBytes != 1200 {
 		t.Fatalf("directions = %+v", got)
+	}
+	if got.BillableRxBytesV6 != 10 || got.BillableTxBytesV6 != 12 ||
+		got.TotalRxBytesV6 != 20 || got.TotalTxBytesV6 != 30 {
+		t.Fatalf("ipv6 counters = %+v", got)
+	}
+}
+
+// The traffic reply reads each proxy's base counter and IPv6 counter together.
+// The IPv6 credit writes both under the record's lock, and a reader that took
+// the base before the credit and the IPv6 counter after it would report IPv6
+// bytes above the matching base, so a client deriving IPv4 from the pair would
+// see a value below zero. This holds the credit mid-update, the way such a
+// reader would see it, and requires the reply to carry one pair or the other.
+func TestLiveTrafficSamplePairsBaseWithIPv6(t *testing.T) {
+	const index = 992712
+	connect.RegisterProxy(index, "traffic-pair-test", "traffic-pair-test")
+	bw := connect.RegisterProxyBandwidth(index)
+	t.Cleanup(func() { connect.UnregisterProxy(index) })
+
+	before := liveTrafficSample(snapT0, connect.ProxyBandwidthTrafficTotals)
+	beforeV4 := before.TotalRxBytes - before.TotalRxBytesV6
+
+	partial := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		bw.WithTrafficUpdate(func() {
+			bw.TotalRxV6.Add(100)
+			close(partial)
+			<-release
+			bw.TotalRx.Add(100)
+		})
+	}()
+	<-partial
+
+	started := make(chan struct{})
+	result := make(chan *LiveTraffic, 1)
+	go func() {
+		close(started)
+		result <- liveTrafficSample(snapT0, connect.ProxyBandwidthTrafficTotals)
+	}()
+	<-started
+	var observed *LiveTraffic
+	select {
+	case observed = <-result:
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	<-finished
+	if observed == nil {
+		observed = <-result
+	}
+	if v4 := observed.TotalRxBytes - observed.TotalRxBytesV6; v4 != beforeV4 {
+		t.Fatalf("the reply mixed a base from one moment with an IPv6 counter from another: ipv4 total = %d, want %d (reply base %d, ipv6 %d)",
+			v4, beforeV4, observed.TotalRxBytes, observed.TotalRxBytesV6)
+	}
+}
+
+// The IP family split reports the IPv6 lane as counted and IPv4 as the base
+// lane minus it. The two are separate counters, so a tick can read the IPv6
+// delta ahead of its base and drive the difference negative; the split clamps
+// it to zero rather than reporting a negative rate.
+func TestSnapshotFamilySplit(t *testing.T) {
+	// Each quantity moves by a different amount in both families, so a split
+	// that reports one quantity's lanes under another's name cannot pass. The
+	// last tick reads the IPv6 counter ahead of its base, which must clamp the
+	// derived IPv4 lane at zero rather than wrap it.
+	var state map[string]directionLanes
+	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 1}, dirSource: func() map[string]directionLanes { return state }}
+	src := env.sources()
+	src.familyCounters = true
+	c := newNodeSnapshotCollector(src)
+
+	state = map[string]directionLanes{"p": {billableRx: 1000, billableTx: 2000, totalRx: 3000, totalTx: 4000, billableRxV6: 100, billableTxV6: 200, totalRxV6: 300, totalTxV6: 400}}
+	c.tick() // baseline
+	env.now = env.now.Add(time.Second)
+	// All v4: the base lanes move and the IPv6 lanes stand still.
+	state = map[string]directionLanes{"p": {billableRx: 1400, billableTx: 2300, totalRx: 3200, totalTx: 4100, billableRxV6: 100, billableTxV6: 200, totalRxV6: 300, totalTxV6: 400}}
+	c.tick()
+	env.now = env.now.Add(time.Second)
+	// Mixed: both families move, by a different amount per quantity.
+	state = map[string]directionLanes{"p": {billableRx: 2400, billableTx: 3500, totalRx: 4000, totalTx: 5600, billableRxV6: 500, billableTxV6: 700, totalRxV6: 550, totalTxV6: 1100}}
+	c.tick()
+	env.now = env.now.Add(time.Second)
+	// The IPv6 counters arrive one sample before their bases: +300 IPv6 over a
+	// +100 base everywhere. IPv4 must read 0, not -200.
+	state = map[string]directionLanes{"p": {billableRx: 2500, billableTx: 3600, totalRx: 4100, totalTx: 5700, billableRxV6: 800, billableTxV6: 1000, totalRxV6: 850, totalTxV6: 1400}}
+	c.tick()
+
+	d := c.Get().Traffic.Directions
+	if d == nil || d.Families == nil {
+		t.Fatalf("family counters present but no split reported: %+v", d)
+	}
+	for _, q := range []struct {
+		name   string
+		split  SnapshotFamilySplit
+		v4Want []int64
+		v6Want []int64
+	}{
+		{"billable rx", d.Families.BillableRx, []int64{400, 600, 0}, []int64{0, 400, 300}},
+		{"billable tx", d.Families.BillableTx, []int64{300, 700, 0}, []int64{0, 500, 300}},
+		{"total rx", d.Families.TotalRx, []int64{200, 550, 0}, []int64{0, 250, 300}},
+		{"total tx", d.Families.TotalTx, []int64{100, 800, 0}, []int64{0, 700, 300}},
+	} {
+		if !reflect.DeepEqual(q.split.V4.HistoryBps, q.v4Want) || !reflect.DeepEqual(q.split.V6.HistoryBps, q.v6Want) {
+			t.Fatalf("%s history = v4 %v v6 %v, want v4 %v v6 %v", q.name, q.split.V4.HistoryBps, q.split.V6.HistoryBps, q.v4Want, q.v6Want)
+		}
+		if q.split.V4.NowBps != q.v4Want[len(q.v4Want)-1] || q.split.V6.NowBps != q.v6Want[len(q.v6Want)-1] {
+			t.Fatalf("%s now = v4 %d v6 %d, want v4 %d v6 %d", q.name, q.split.V4.NowBps, q.split.V6.NowBps, q.v4Want[len(q.v4Want)-1], q.v6Want[len(q.v6Want)-1])
+		}
+	}
+}
+
+// A source that does not count IPv6 traffic reports directional rates without a
+// family split, so a reader draws the old page instead of a flat IPv6 line.
+func TestSnapshotFamilySplitAbsentWithoutCounters(t *testing.T) {
+	state := map[string]directionLanes{"p": {billableRx: 1000, totalRx: 1000}}
+	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 1}, dirSource: func() map[string]directionLanes { return state }}
+	c := newNodeSnapshotCollector(env.sources())
+	c.tick()
+	env.now = env.now.Add(time.Second)
+	state = map[string]directionLanes{"p": {billableRx: 2000, totalRx: 2000}}
+	c.tick()
+
+	d := c.Get().Traffic.Directions
+	if d == nil {
+		t.Fatal("directional block missing")
+	}
+	if d.Families != nil {
+		t.Fatalf("family split reported without family counters: %+v", d.Families)
 	}
 }
 
@@ -246,5 +383,136 @@ func TestSnapshotPacketRates(t *testing.T) {
 	got := c.Get().Traffic.Packets
 	if got == nil || !reflect.DeepEqual(got.BillableRx.HistoryPps, []int64{3, 0}) || !reflect.DeepEqual(got.BillableTx.HistoryPps, []int64{7, 3}) {
 		t.Fatalf("packet rates: %+v", got)
+	}
+}
+
+func TestFamilySplit(t *testing.T) {
+	const index = 992711
+	connect.RegisterProxy(index, "family-test", "family-test")
+	bw := connect.RegisterProxyBandwidth(index)
+	t.Cleanup(func() { connect.UnregisterProxy(index) })
+
+	s := newDirectionSampler()
+	_, _, initial := readProxyBandwidth()
+	s.sample(initial, snapT0)
+
+	partial := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		bw.WithTrafficUpdate(func() {
+			bw.TotalRx.Add(100)
+			close(partial)
+			<-release
+			bw.TotalRxV6.Add(100)
+		})
+	}()
+	<-partial
+
+	started := make(chan struct{})
+	result := make(chan map[string]directionLanes, 1)
+	go func() {
+		close(started)
+		_, _, directions := readProxyBandwidth()
+		result <- directions
+	}()
+	<-started
+	var observed map[string]directionLanes
+	select {
+	case observed = <-result:
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	<-finished
+	if observed == nil {
+		observed = <-result
+	}
+	s.sample(observed, snapT0.Add(time.Second))
+	// A complete IPv6-only sample moves the IPv6 lane by the whole write and
+	// leaves the IPv4 lane, derived as the base minus it, at zero. A sample that
+	// missed the write or the proxy would leave both lanes at zero.
+	split := s.familySplit(dirTotalRxV4, dirTotalRxV6)
+	if got := split.V4.HistoryBps; len(got) != 1 || got[0] != 0 {
+		t.Fatalf("pure IPv6 write produced IPv4 history %v, want [0]", got)
+	}
+	if got := split.V6.HistoryBps; len(got) != 1 || got[0] != 100 {
+		t.Fatalf("pure IPv6 write produced IPv6 history %v, want [100]", got)
+	}
+}
+
+func TestFamilySplitReconcilesSameProxyCatchUp(t *testing.T) {
+	s := newDirectionSampler()
+	s.sample(map[string]directionLanes{"p": {}}, snapT0)
+	s.sample(map[string]directionLanes{"p": {totalRxV6: 100}}, snapT0.Add(time.Second))
+	s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 100}}, snapT0.Add(2*time.Second))
+
+	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
+	if len(got) != 2 || got[0] != 0 || got[1] != 0 {
+		t.Fatalf("derived V4 history = %v, want [0 0]", got)
+	}
+}
+
+func TestFamilySplitReconcilesBytesAcrossUnequalIntervals(t *testing.T) {
+	s := newDirectionSampler()
+	s.sample(map[string]directionLanes{"p": {}}, snapT0)
+	s.sample(map[string]directionLanes{"p": {totalRxV6: 100}}, snapT0.Add(time.Second))
+	s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 100}}, snapT0.Add(3*time.Second))
+	s.sample(map[string]directionLanes{"p": {totalRx: 150, totalRxV6: 100}}, snapT0.Add(4*time.Second))
+
+	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
+	if len(got) != 3 || got[0] != 0 || got[1] != 0 || got[2] != 50 {
+		t.Fatalf("derived V4 history = %v, want [0 0 50]", got)
+	}
+}
+
+func TestFamilySplitDoesNotChargeDebtToAnotherProxy(t *testing.T) {
+	s := newDirectionSampler()
+	s.sample(map[string]directionLanes{"p": {}, "q": {}}, snapT0)
+	s.sample(map[string]directionLanes{"p": {totalRxV6: 100}, "q": {}}, snapT0.Add(time.Second))
+	// p leaves before its base catches up; q's own IPv4 bytes must not pay p's debt.
+	s.sample(map[string]directionLanes{"q": {totalRx: 100}}, snapT0.Add(2*time.Second))
+
+	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
+	if len(got) != 2 || got[0] != 0 || got[1] != 100 {
+		t.Fatalf("derived V4 history = %v, want [0 100]", got)
+	}
+}
+
+func TestFamilySplitClearsDebtAfterCounterReset(t *testing.T) {
+	s := newDirectionSampler()
+	s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 100}}, snapT0)
+	s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 200}}, snapT0.Add(time.Second))
+	// The proxy respawns with zeroed counters; its old debt must not follow.
+	s.sample(map[string]directionLanes{"p": {}}, snapT0.Add(2*time.Second))
+	s.sample(map[string]directionLanes{"p": {totalRx: 100}}, snapT0.Add(3*time.Second))
+
+	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
+	if len(got) != 3 || got[0] != 0 || got[1] != 0 || got[2] != 100 {
+		t.Fatalf("derived V4 history = %v, want [0 0 100]", got)
+	}
+}
+
+func TestFamilySplitKeepsReconciledSampleAfterRingRollover(t *testing.T) {
+	s := newDirectionSampler()
+	s.sample(map[string]directionLanes{"p": {}}, snapT0)
+	s.sample(map[string]directionLanes{"p": {totalRxV6: 100}}, snapT0.Add(time.Second))
+	s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 100}}, snapT0.Add(2*time.Second))
+	now := snapT0.Add(2 * time.Second)
+	for i := 0; i < snapshotRingSize; i++ {
+		now = now.Add(time.Second)
+		s.sample(map[string]directionLanes{"p": {totalRx: 100, totalRxV6: 100}}, now)
+	}
+
+	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
+	if len(got) != snapshotRingSize {
+		t.Fatalf("history length = %d, want %d", len(got), snapshotRingSize)
+	}
+	// The catch-up sample was the second recorded sample and has been evicted
+	// with the deficit, but no later sample may turn that debt into IPv4.
+	for i, v := range got {
+		if v != 0 {
+			t.Fatalf("history[%d] = %d, want 0", i, v)
+		}
 	}
 }
