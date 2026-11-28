@@ -371,9 +371,15 @@ func TestFamilySplit(t *testing.T) {
 		observed = <-result
 	}
 	s.sample(observed, snapT0.Add(time.Second))
-	got := s.familySplit(dirTotalRxV4, dirTotalRxV6).V4.HistoryBps
-	if len(got) != 1 || got[0] != 0 {
+	// A complete IPv6-only sample moves the IPv6 lane by the whole write and
+	// leaves the IPv4 lane, derived as the base minus it, at zero. A sample that
+	// missed the write or the proxy would leave both lanes at zero.
+	split := s.familySplit(dirTotalRxV4, dirTotalRxV6)
+	if got := split.V4.HistoryBps; len(got) != 1 || got[0] != 0 {
 		t.Fatalf("pure IPv6 write produced IPv4 history %v, want [0]", got)
+	}
+	if got := split.V6.HistoryBps; len(got) != 1 || got[0] != 100 {
+		t.Fatalf("pure IPv6 write produced IPv6 history %v, want [100]", got)
 	}
 }
 
