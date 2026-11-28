@@ -122,14 +122,22 @@ type ExtenderCarrierStats struct {
 // since start, and the last 30 one minute buckets of ingress plus egress as
 // whole KiB.
 type ExtenderCarrierBytes struct {
-	Carrier      string   `json:"carrier"`
-	IngressBytes uint64   `json:"ingress_bytes"`
-	EgressBytes  uint64   `json:"egress_bytes"`
-	RateInBps    uint64   `json:"rate_in_bps,omitempty"`
-	RateOutBps   uint64   `json:"rate_out_bps,omitempty"`
-	LiveConns    uint64   `json:"live_conns"`
-	ConnsTotal   uint64   `json:"conns_total"`
-	Minutes      []uint32 `json:"minutes,omitempty"`
+	Carrier        string   `json:"carrier"`
+	IngressBytes   uint64   `json:"ingress_bytes"`
+	EgressBytes    uint64   `json:"egress_bytes"`
+	RateInBps      uint64   `json:"rate_in_bps,omitempty"`
+	RateOutBps     uint64   `json:"rate_out_bps,omitempty"`
+	LiveConns      uint64   `json:"live_conns"`
+	ConnsTotal     uint64   `json:"conns_total"`
+	Minutes        []uint32 `json:"minutes,omitempty"`
+	IngressBytesV4 uint64   `json:"ingress_bytes_v4,omitempty"`
+	IngressBytesV6 uint64   `json:"ingress_bytes_v6,omitempty"`
+	EgressBytesV4  uint64   `json:"egress_bytes_v4,omitempty"`
+	EgressBytesV6  uint64   `json:"egress_bytes_v6,omitempty"`
+	LiveConnsV4    uint64   `json:"live_conns_v4,omitempty"`
+	LiveConnsV6    uint64   `json:"live_conns_v6,omitempty"`
+	ConnsTotalV4   uint64   `json:"conns_total_v4,omitempty"`
+	ConnsTotalV6   uint64   `json:"conns_total_v6,omitempty"`
 }
 
 // ExtenderReading mirrors the provider's extenderControlReading.
@@ -496,6 +504,27 @@ func formatExtenderTraffic(w io.Writer, r ExtenderReading) {
 			c.LiveConns,
 			c.ConnsTotal,
 		)
+		if c.IngressBytesV4 > 0 || c.EgressBytesV4 > 0 || c.LiveConnsV4 > 0 || c.ConnsTotalV4 > 0 ||
+			c.IngressBytesV6 > 0 || c.EgressBytesV6 > 0 || c.LiveConnsV6 > 0 || c.ConnsTotalV6 > 0 {
+			fmt.Fprintf(w, "      %-8s %10s %10s %12s %12s %d live, %d total\n",
+				"ipv4:",
+				formatBytes(float64(c.IngressBytesV4)),
+				formatBytes(float64(c.EgressBytesV4)),
+				"-",
+				"-",
+				c.LiveConnsV4,
+				c.ConnsTotalV4,
+			)
+			fmt.Fprintf(w, "      %-8s %10s %10s %12s %12s %d live, %d total\n",
+				"ipv6:",
+				formatBytes(float64(c.IngressBytesV6)),
+				formatBytes(float64(c.EgressBytesV6)),
+				"-",
+				"-",
+				c.LiveConnsV6,
+				c.ConnsTotalV6,
+			)
+		}
 	}
 	fmt.Fprintf(w, "    %-10s %10s %10s\n", "total:",
 		formatBytes(float64(r.RelayBytesIn)),
