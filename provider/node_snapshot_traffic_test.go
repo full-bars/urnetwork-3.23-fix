@@ -166,26 +166,30 @@ func TestLiveTrafficSample(t *testing.T) {
 // delta ahead of its base and drive the difference negative; the split clamps
 // it to zero rather than reporting a negative rate.
 func TestSnapshotFamilySplit(t *testing.T) {
+	// Each quantity moves by a different amount in both families, so a split
+	// that reports one quantity's lanes under another's name cannot pass. The
+	// last tick reads the IPv6 counter ahead of its base, which must clamp the
+	// derived IPv4 lane at zero rather than wrap it.
 	var state map[string]directionLanes
 	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 1}, dirSource: func() map[string]directionLanes { return state }}
 	src := env.sources()
 	src.familyCounters = true
 	c := newNodeSnapshotCollector(src)
 
-	state = map[string]directionLanes{"p": {billableRx: 1000, billableTx: 1000, totalRx: 1000, totalTx: 1000, billableRxV6: 100, billableTxV6: 100, totalRxV6: 100, totalTxV6: 100}}
+	state = map[string]directionLanes{"p": {billableRx: 1000, billableTx: 2000, totalRx: 3000, totalTx: 4000, billableRxV6: 100, billableTxV6: 200, totalRxV6: 300, totalTxV6: 400}}
 	c.tick() // baseline
 	env.now = env.now.Add(time.Second)
 	// All v4: the base lanes move and the IPv6 lanes stand still.
-	state = map[string]directionLanes{"p": {billableRx: 1400, billableTx: 1400, totalRx: 1400, totalTx: 1400, billableRxV6: 100, billableTxV6: 100, totalRxV6: 100, totalTxV6: 100}}
+	state = map[string]directionLanes{"p": {billableRx: 1400, billableTx: 2300, totalRx: 3200, totalTx: 4100, billableRxV6: 100, billableTxV6: 200, totalRxV6: 300, totalTxV6: 400}}
 	c.tick()
 	env.now = env.now.Add(time.Second)
-	// Mixed: base +1000, IPv6 +400, so IPv4 is 600.
-	state = map[string]directionLanes{"p": {billableRx: 2400, billableTx: 2400, totalRx: 2400, totalTx: 2400, billableRxV6: 500, billableTxV6: 500, totalRxV6: 500, totalTxV6: 500}}
+	// Mixed: both families move, by a different amount per quantity.
+	state = map[string]directionLanes{"p": {billableRx: 2400, billableTx: 3500, totalRx: 4000, totalTx: 5600, billableRxV6: 500, billableTxV6: 700, totalRxV6: 550, totalTxV6: 1100}}
 	c.tick()
 	env.now = env.now.Add(time.Second)
-	// The IPv6 counter arrives one sample before its base: +300 IPv6 over a
-	// +100 base. IPv4 must read 0, not -200.
-	state = map[string]directionLanes{"p": {billableRx: 2500, billableTx: 2500, totalRx: 2500, totalTx: 2500, billableRxV6: 800, billableTxV6: 800, totalRxV6: 800, totalTxV6: 800}}
+	// The IPv6 counters arrive one sample before their bases: +300 IPv6 over a
+	// +100 base everywhere. IPv4 must read 0, not -200.
+	state = map[string]directionLanes{"p": {billableRx: 2500, billableTx: 3600, totalRx: 4100, totalTx: 5700, billableRxV6: 800, billableTxV6: 1000, totalRxV6: 850, totalTxV6: 1400}}
 	c.tick()
 
 	d := c.Get().Traffic.Directions
@@ -199,9 +203,9 @@ func TestSnapshotFamilySplit(t *testing.T) {
 		v6Want []int64
 	}{
 		{"billable rx", d.Families.BillableRx, []int64{400, 600, 0}, []int64{0, 400, 300}},
-		{"billable tx", d.Families.BillableTx, []int64{400, 600, 0}, []int64{0, 400, 300}},
-		{"total rx", d.Families.TotalRx, []int64{400, 600, 0}, []int64{0, 400, 300}},
-		{"total tx", d.Families.TotalTx, []int64{400, 600, 0}, []int64{0, 400, 300}},
+		{"billable tx", d.Families.BillableTx, []int64{300, 700, 0}, []int64{0, 500, 300}},
+		{"total rx", d.Families.TotalRx, []int64{200, 550, 0}, []int64{0, 250, 300}},
+		{"total tx", d.Families.TotalTx, []int64{100, 800, 0}, []int64{0, 700, 300}},
 	} {
 		if !reflect.DeepEqual(q.split.V4.HistoryBps, q.v4Want) || !reflect.DeepEqual(q.split.V6.HistoryBps, q.v6Want) {
 			t.Fatalf("%s history = v4 %v v6 %v, want v4 %v v6 %v", q.name, q.split.V4.HistoryBps, q.split.V6.HistoryBps, q.v4Want, q.v6Want)
