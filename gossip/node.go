@@ -399,7 +399,7 @@ type Node struct {
 	dialCount             atomic.Int64
 	dialStats             dialCounters
 	dialFailureLock       sync.Mutex
-	dialFailureClasses    map[peer.ID]string
+	dialFailureClasses    map[peer.ID]map[string]bool
 	messagesAccepted      atomic.Uint64
 	applyErrors           atomic.Uint64
 	lastAcceptedUnixMilli atomic.Int64
@@ -1180,6 +1180,10 @@ func (self *Node) peer() {
 	wg.Wait()
 }
 
+// noteDialClass records a dial failure class for a peer and reports whether
+// it is the first failure of that class since the peer last connected. An
+// empty class means the peer connected and forgets every recorded class. At
+// most 1024 peers are kept.
 func (self *Node) noteDialClass(id peer.ID, class string) bool {
 	self.dialFailureLock.Lock()
 	defer self.dialFailureLock.Unlock()
@@ -1188,18 +1192,23 @@ func (self *Node) noteDialClass(id peer.ID, class string) bool {
 		return false
 	}
 	if self.dialFailureClasses == nil {
-		self.dialFailureClasses = make(map[peer.ID]string)
+		self.dialFailureClasses = make(map[peer.ID]map[string]bool)
 	}
-	if self.dialFailureClasses[id] == class {
+	classes, ok := self.dialFailureClasses[id]
+	if !ok {
+		if len(self.dialFailureClasses) >= 1024 {
+			for old := range self.dialFailureClasses {
+				delete(self.dialFailureClasses, old)
+				break
+			}
+		}
+		classes = map[string]bool{}
+		self.dialFailureClasses[id] = classes
+	}
+	if classes[class] {
 		return false
 	}
-	if len(self.dialFailureClasses) >= 1024 {
-		for old := range self.dialFailureClasses {
-			delete(self.dialFailureClasses, old)
-			break
-		}
-	}
-	self.dialFailureClasses[id] = class
+	classes[class] = true
 	return true
 }
 

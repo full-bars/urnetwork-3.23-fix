@@ -53,7 +53,8 @@ func TestDialClassTransitions(t *testing.T) {
 		class string
 		first bool
 	}{
-		{"backoff", true}, {"backoff", false}, {"gated", true}, {"", false}, {"gated", true},
+		{"backoff", true}, {"backoff", false}, {"gated", true}, {"backoff", false}, {"gated", false},
+		{"", false}, {"gated", true}, {"backoff", true},
 	} {
 		if got := n.noteDialClass(id, tc.class); got != tc.first {
 			t.Fatalf("class %q: got %v, want %v", tc.class, got, tc.first)
