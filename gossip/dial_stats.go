@@ -46,7 +46,7 @@ func dialFailureClass(err error) string {
 		return "gated"
 	case errors.Is(err, swarm.ErrDialBackoff):
 		return "backoff"
-	case errors.Is(err, swarm.ErrNoGoodAddresses):
+	case errors.Is(err, swarm.ErrNoAddresses), errors.Is(err, swarm.ErrNoGoodAddresses):
 		return "no_addrs"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"

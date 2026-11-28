@@ -34,6 +34,7 @@ func TestDialFailureClassSwarmErrors(t *testing.T) {
 	}{
 		{"backoff", swarm.ErrDialBackoff},
 		{"no_addrs", swarm.ErrNoGoodAddresses},
+		{"no_addrs", swarm.ErrNoAddresses},
 		{"gated", swarm.ErrGaterDisallowedConnection},
 	} {
 		for _, err := range []error{tc.err, fmt.Errorf("wrapped: %w", tc.err), &swarm.DialError{Cause: tc.err}, &swarm.DialError{DialErrors: []swarm.TransportError{{Cause: tc.err}}}} {
